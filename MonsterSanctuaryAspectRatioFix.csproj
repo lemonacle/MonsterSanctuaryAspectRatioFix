@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>lemonacle.MonsterSanctuary.AspectRatioFix</AssemblyName>
+    <RootNamespace>MonsterSanctuaryAspectRatioFix</RootNamespace>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+
+    <MonsterSanctuaryDir Condition="'$(MonsterSanctuaryDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Monster Sanctuary</MonsterSanctuaryDir>
+    <ManagedDir>$(MonsterSanctuaryDir)\Monster Sanctuary_Data\Managed</ManagedDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild"
+                      Version="0.4.3"
+                      PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core"
+                      Version="5.4.21" />
+
+    <Reference Include="Assembly-CSharp" Publicize="true">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="Assembly-CSharp-firstpass" Publicize="true">
+      <HintPath>$(ManagedDir)\Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="CopyPluginToGame"
+          AfterTargets="Build"
+          Condition="Exists('$(MonsterSanctuaryDir)\BepInEx\plugins')">
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(MonsterSanctuaryDir)\BepInEx\plugins" />
+  </Target>
+</Project>
