@@ -4,10 +4,11 @@ using System.Reflection;
 using BepInEx;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.0")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.11")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -16,7 +17,6 @@ namespace MonsterSanctuaryAspectRatioFix
         private const float SixteenByTenAspect = 16f / 10f;
         private const float AspectTolerance = 0.02f;
         private const float UiAspect = 16f / 9f;
-        private const float UiLayerRefreshInterval = 0.25f;
         private static float VisibleWorldWidth { get; set; } = 360f;
         private static float TargetAspect { get; set; } = AspectRatioFixAspect;
         private static float HorizontalHudInset => (OriginalWidth - VisibleWorldWidth) / 2f;
@@ -31,6 +31,9 @@ namespace MonsterSanctuaryAspectRatioFix
         private int previousScreenWidth;
         private int previousScreenHeight;
         private Coroutine pendingApply;
+        private Coroutine sceneRegistrationCoroutine;
+        private Coroutine familiarSelectionLayoutCoroutine;
+        private Coroutine buffInfoUiShadeHideCoroutine;
         private Harmony harmony;
         private PixelCamera2D activePixelCamera;
         private Camera primaryCamera;
@@ -54,9 +57,10 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject tooltipQuadObject;
         private MeshRenderer tooltipQuadRenderer;
         private Material tooltipQuadMaterial;
+        private GameObject buffInfoUiShadeObject;
+        private tk2dTiledSprite buffInfoUiShadeSprite;
         private readonly Dictionary<GameObject, int> originalLayers = new Dictionary<GameObject, int>();
         private readonly Dictionary<Camera, int> originalCameraMasks = new Dictionary<Camera, int>();
-        private float nextUiLayerRefresh;
         private readonly Dictionary<Transform, float> originalHudLocalX = new Dictionary<Transform, float>();
         private MinimapView anchoredMinimap;
         private Vector3 originalMinimapInitialPosition;
@@ -82,6 +86,8 @@ namespace MonsterSanctuaryAspectRatioFix
         private Coroutine combatInitializationCoroutine;
         private Coroutine combatBuffInfoLayoutCoroutine;
         private CombatUIController activeCombatUi;
+        private readonly Dictionary<Transform, Vector3> originalVictoryBannerLocalPositions =
+            new Dictionary<Transform, Vector3>();
         private bool suppressTooltipCompositeForCombatBuffInfo;
         /*
          * Skip prompts are anchored only when shown. Their renderer
@@ -91,9 +97,15 @@ namespace MonsterSanctuaryAspectRatioFix
         private Coroutine skipPromptAnchorCoroutine;
         /*
          * Familiar-choice layout is captured and centered once when
-         * the selection menu opens.
+         * the intro initializes, before the selection menu opens.
          */
         private readonly List<KeepersIntro> registeredKeepersIntros = new List<KeepersIntro>();
+        private readonly Dictionary<Transform, Vector3> originalFamiliarSelectionLocalPositions =
+            new Dictionary<Transform, Vector3>();
+        private readonly HashSet<KeepersIntro> centeredFamiliarSelections = new HashSet<KeepersIntro>();
+        private readonly Dictionary<Transform, Vector3> originalKeeperIntroLocalPositions =
+            new Dictionary<Transform, Vector3>();
+        private readonly HashSet<KeepersIntro> adjustedKeeperIntros = new HashSet<KeepersIntro>();
         private static readonly FieldInfo BaseWidthField = typeof(PixelCamera2D).GetField("baseWidth",
             BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly FieldInfo BaseHeightField = typeof(PixelCamera2D).GetField("baseHeight",
@@ -116,18 +128,34 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.0 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.11 4:3 and 16:10 camera-policy plugin loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
             previousScreenHeight = Screen.height;
+            SceneManager.sceneLoaded += OnSceneLoaded;
             ScheduleApply();
         }
 
         private void OnDestroy()
         {
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+            if (sceneRegistrationCoroutine != null)
+            {
+                StopCoroutine(sceneRegistrationCoroutine);
+                sceneRegistrationCoroutine = null;
+            }
+            if (buffInfoUiShadeHideCoroutine != null)
+            {
+                StopCoroutine(buffInfoUiShadeHideCoroutine);
+                buffInfoUiShadeHideCoroutine = null;
+            }
+            DestroyBuffInfoUiShade();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
+            RestoreFamiliarSelectionLayouts();
+            RestoreKeeperIntroLayouts();
+            RestoreVictoryBannerLayouts();
             RestoreAllOriginalLayers();
             RestoreAllCameraMasks();
             DestroyUiPipeline();
@@ -153,20 +181,11 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            EnsureUiPipeline();
-            if (Time.unscaledTime >= nextUiLayerRefresh)
-            {
-                nextUiLayerRefresh = Time.unscaledTime + UiLayerRefreshInterval;
-                AssignKnownUiObjects();
-                EnsureFullFrameEffectsUseWorldPresentation();
-                ExcludeUiLayerFromOtherCameras();
-            }
             UpdateExplorationHudLayout();
             UpdateUiCameraTransform();
             UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
             UpdateTooltipQuadLayout();
-            UiInputActive = IsUiLayerMenuOpen();
         }
 
         private void ScheduleApply()
@@ -251,7 +270,7 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
             UpdateTooltipQuadLayout();
-            UiInputActive = IsUiLayerMenuOpen();
+            RefreshUiInputState();
             if (RelativeOriginDirtyField != null)
             {
                 foreach (CameraController controller in Resources.FindObjectsOfTypeAll<CameraController>())
@@ -301,6 +320,8 @@ namespace MonsterSanctuaryAspectRatioFix
                 if (CropActive)
                 {
                     RestoreExplorationHudLayout();
+                    RestoreFamiliarSelectionLayouts();
+                    RestoreKeeperIntroLayouts();
                 }
                 cachedWorldQuadMesh = null;
                 cachedWorldFullUvs = null;
@@ -318,8 +339,11 @@ namespace MonsterSanctuaryAspectRatioFix
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
-            suppressTooltipCompositeForCombatBuffInfo = false;
+            SetCombatBuffInfoCompositePriority(false);
+            DestroyBuffInfoUiShade();
             RestoreExplorationHudLayout();
+            RestoreFamiliarSelectionLayouts();
+            RestoreKeeperIntroLayouts();
             MeshRenderer worldQuad = FinalCamRectField?.GetValue(pixelCamera) as MeshRenderer;
             if (worldQuad != null)
             {
@@ -616,6 +640,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void DestroyUiPipeline()
         {
+            DestroyBuffInfoUiShade();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
@@ -773,20 +798,93 @@ namespace MonsterSanctuaryAspectRatioFix
             tooltipQuadObject.transform.position = center;
         }
 
-        private bool IsUiLayerMenuOpen()
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
-            if (!UiCompositeActive || uiLayer < 0)
+            ScheduleSceneRegistration();
+        }
+
+        private void ScheduleSceneRegistration()
+        {
+            if (sceneRegistrationCoroutine != null)
+            {
+                StopCoroutine(sceneRegistrationCoroutine);
+            }
+            sceneRegistrationCoroutine = StartCoroutine(RegisterSceneUiAfterInitialization());
+        }
+
+        private IEnumerator RegisterSceneUiAfterInitialization()
+        {
+            /*
+             * sceneLoaded is raised before every Start method has necessarily
+             * populated its menu lists. Wait through the first completed frame,
+             * then register the scene once. Dynamic items created later inherit
+             * their presentation layer through the menu event patches below.
+             */
+            yield return null;
+            yield return new WaitForEndOfFrame();
+            sceneRegistrationCoroutine = null;
+            if (!CropActive)
+            {
+                yield break;
+            }
+            EnsureUiPipeline();
+            AssignKnownUiObjects();
+            RegisterExistingKeepersIntros();
+            AssignRegisteredKeepersIntros();
+            ExcludeUiLayerFromOtherCameras();
+            RefreshUiInputState();
+        }
+
+        private bool TryGetPresentationLayer(GameObject root, out int targetLayer)
+        {
+            targetLayer = -1;
+            if (!CropActive || root == null)
             {
                 return false;
             }
-            foreach (MenuList menu in MenuList.MenuStack)
+            for (Transform current = root.transform; current != null; current = current.parent)
             {
-                if (menu != null && menu.gameObject.activeInHierarchy && menu.gameObject.layer == uiLayer)
+                int currentLayer = current.gameObject.layer;
+                if (currentLayer == uiLayer || currentLayer == tooltipLayer)
                 {
+                    targetLayer = currentLayer;
                     return true;
                 }
             }
             return false;
+        }
+
+        private bool TryGetMenuPresentationLayer(MenuList menuList, out int targetLayer)
+        {
+            targetLayer = -1;
+            if (menuList == null)
+            {
+                return false;
+            }
+            if (TryGetPresentationLayer(menuList.RootElement, out targetLayer))
+            {
+                return true;
+            }
+            return TryGetPresentationLayer(menuList.gameObject, out targetLayer);
+        }
+
+        private void RefreshUiInputState()
+        {
+            UiInputActive = false;
+            if (!UiCompositeActive || uiLayer < 0)
+            {
+                return;
+            }
+            foreach (MenuList menu in MenuList.MenuStack)
+            {
+                int targetLayer;
+                if (menu != null && menu.IsOpenOrLocked &&
+                    TryGetMenuPresentationLayer(menu, out targetLayer) && targetLayer == uiLayer)
+                {
+                    UiInputActive = true;
+                    return;
+                }
+            }
         }
 
         private void AssignKnownUiObjects()
@@ -826,6 +924,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 AssignUiComponent(uiController.ScrollingCredits);
                 AssignUiComponent(uiController.CostumeMenu);
                 AssignUiComponent(uiController.NewGameMenu);
+                AssignNewGameDescriptionPresentation(uiController.NewGameMenu);
                 EnsureFullFrameEffectsUseWorldPresentation();
             }
             SaveGameMenu[] saveMenus = Resources.FindObjectsOfTypeAll<SaveGameMenu>();
@@ -856,6 +955,7 @@ namespace MonsterSanctuaryAspectRatioFix
                     AssignUiLayerRecursively(mainMenu.MenuTooltip);
                 }
             }
+            AssignExistingTitleAnimations();
             AssignKnownTooltipObjects();
         }
 
@@ -898,6 +998,235 @@ namespace MonsterSanctuaryAspectRatioFix
             ExcludeUiLayerFromOtherCameras();
             UpdateTooltipCameraTransform();
             UpdateTooltipQuadLayout();
+        }
+
+        private void AssignNewGameDescriptionPresentation(NewGameMenu newGameMenu)
+        {
+            if (!CropActive || newGameMenu == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            if (!TooltipCompositeActive || tooltipLayer < 0)
+            {
+                return;
+            }
+            if (newGameMenu.DescriptionBG != null)
+            {
+                SetLayerRecursively(newGameMenu.DescriptionBG.gameObject, tooltipLayer);
+            }
+            if (newGameMenu.DescriptionText != null)
+            {
+                SetLayerRecursively(newGameMenu.DescriptionText.gameObject, tooltipLayer);
+            }
+            UpdateTooltipCameraTransform();
+            UpdateTooltipQuadLayout();
+        }
+
+        private void EnsureBuffInfoUiShade()
+        {
+            if (!CropActive || !UiCompositeActive || uiLayer < 0 || buffInfoUiShadeObject != null)
+            {
+                return;
+            }
+            UIController uiController = UIController.Instance;
+            ShadeLayer sourceShade = uiController != null ? uiController.ShadeLayer : null;
+            if (sourceShade == null || sourceShade.layer == null)
+            {
+                return;
+            }
+            buffInfoUiShadeObject = UnityEngine.Object.Instantiate(sourceShade.gameObject);
+            buffInfoUiShadeObject.name = "AspectRatioFix Buff Info UI Shade";
+            buffInfoUiShadeObject.transform.SetParent(sourceShade.transform.parent, worldPositionStays: true);
+            ShadeLayer clonedShade = buffInfoUiShadeObject.GetComponent<ShadeLayer>();
+            if (clonedShade != null)
+            {
+                buffInfoUiShadeSprite = clonedShade.layer;
+                clonedShade.enabled = false;
+            }
+            if (buffInfoUiShadeSprite == null)
+            {
+                buffInfoUiShadeSprite = buffInfoUiShadeObject.GetComponentInChildren<tk2dTiledSprite>(true);
+            }
+            foreach (ColorTween tween in buffInfoUiShadeObject.GetComponentsInChildren<ColorTween>(true))
+            {
+                if (tween != null)
+                {
+                    tween.enabled = false;
+                }
+            }
+            SetLayerRecursively(buffInfoUiShadeObject, uiLayer);
+            buffInfoUiShadeObject.SetActive(false);
+            ExcludeUiLayerFromOtherCameras();
+        }
+
+        private void ShowBuffInfoUiShade(BuffInfoOverlay overlay)
+        {
+            if (!CropActive || overlay == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            EnsureBuffInfoUiShade();
+            UIController uiController = UIController.Instance;
+            ShadeLayer sourceShade = uiController != null ? uiController.ShadeLayer : null;
+            if (buffInfoUiShadeObject == null || buffInfoUiShadeSprite == null ||
+                sourceShade == null || sourceShade.layer == null)
+            {
+                return;
+            }
+            if (buffInfoUiShadeHideCoroutine != null)
+            {
+                StopCoroutine(buffInfoUiShadeHideCoroutine);
+                buffInfoUiShadeHideCoroutine = null;
+            }
+            buffInfoUiShadeObject.transform.localPosition = sourceShade.transform.localPosition;
+            buffInfoUiShadeObject.transform.localRotation = sourceShade.transform.localRotation;
+            buffInfoUiShadeObject.transform.localScale = sourceShade.transform.localScale;
+            buffInfoUiShadeSprite.dimensions = sourceShade.layer.dimensions;
+            buffInfoUiShadeObject.SetActive(true);
+            ColorTween.EndTween(buffInfoUiShadeSprite.gameObject, recursive: false);
+            Color transparent = new Color(0f, 0f, 0f, 0f);
+            Color shaded = new Color(0f, 0f, 0f, sourceShade.transparency);
+            buffInfoUiShadeSprite.color = transparent;
+            ColorTween.StartTween(buffInfoUiShadeSprite.gameObject, transparent, shaded, 0.1f);
+        }
+
+        private void HideBuffInfoUiShade()
+        {
+            if (buffInfoUiShadeObject == null || buffInfoUiShadeSprite == null ||
+                !buffInfoUiShadeObject.activeSelf)
+            {
+                return;
+            }
+            if (buffInfoUiShadeHideCoroutine != null)
+            {
+                StopCoroutine(buffInfoUiShadeHideCoroutine);
+            }
+            Color current = buffInfoUiShadeSprite.color;
+            ColorTween.EndTween(buffInfoUiShadeSprite.gameObject, recursive: false);
+            ColorTween.StartTween(buffInfoUiShadeSprite.gameObject, current, new Color(0f, 0f, 0f, 0f), 0.1f);
+            buffInfoUiShadeHideCoroutine = StartCoroutine(DisableBuffInfoUiShadeAfterFade());
+        }
+
+        private IEnumerator DisableBuffInfoUiShadeAfterFade()
+        {
+            yield return new WaitForSecondsRealtime(0.12f);
+            buffInfoUiShadeHideCoroutine = null;
+            if (buffInfoUiShadeObject != null)
+            {
+                buffInfoUiShadeObject.SetActive(false);
+            }
+        }
+
+        private void DestroyBuffInfoUiShade()
+        {
+            if (buffInfoUiShadeObject != null)
+            {
+                UnityEngine.Object.Destroy(buffInfoUiShadeObject);
+                buffInfoUiShadeObject = null;
+            }
+            buffInfoUiShadeSprite = null;
+        }
+
+        private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
+        {
+            if (!CropActive || popup == null || popup.DescriptionGO == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            SetLayerRecursively(popup.DescriptionGO, uiLayer);
+        }
+
+        private void AssignOnlineArenaDescriptionPresentation()
+        {
+            if (!CropActive)
+            {
+                return;
+            }
+            MultiChoicePopup popup = MultiChoicePopup.Instance;
+            if (popup == null || popup.DescriptionGO == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            if (!TooltipCompositeActive || tooltipLayer < 0)
+            {
+                return;
+            }
+            SetLayerRecursively(popup.DescriptionGO, tooltipLayer);
+            ExcludeUiLayerFromOtherCameras();
+            UpdateTooltipCameraTransform();
+            UpdateTooltipQuadLayout();
+        }
+
+        private void SetCombatBuffInfoCompositePriority(bool buffInfoOnTop)
+        {
+            suppressTooltipCompositeForCombatBuffInfo = false;
+            ApplyTooltipCompositeVisibility();
+            if (uiQuadMaterial != null)
+            {
+                uiQuadMaterial.renderQueue = buffInfoOnTop ? 4001 : 4000;
+            }
+            if (tooltipQuadMaterial != null)
+            {
+                tooltipQuadMaterial.renderQueue = buffInfoOnTop ? 4000 : 4001;
+            }
+            if (uiQuadRenderer != null)
+            {
+                uiQuadRenderer.sortingOrder = buffInfoOnTop ? 32767 : 32766;
+            }
+            if (tooltipQuadRenderer != null)
+            {
+                tooltipQuadRenderer.sortingOrder = buffInfoOnTop ? 32766 : 32767;
+            }
+        }
+
+        private void RefreshBuffInfoPresentation(BuffInfoOverlay overlay, BuffInfo buffInfo)
+        {
+            if (!CropActive || overlay == null || buffInfo == null)
+            {
+                return;
+            }
+            int targetLayer;
+            if (TryGetPresentationLayer(overlay.BuffInfoRoot, out targetLayer))
+            {
+                SetLayerRecursively(buffInfo.gameObject, targetLayer);
+            }
+        }
+
+        private void RefreshScrollingCreditsEntryPresentation(ScrollingCreditsEntry entry)
+        {
+            if (!CropActive || entry == null || entry.transform.parent == null)
+            {
+                return;
+            }
+            int targetLayer;
+            if (TryGetPresentationLayer(entry.transform.parent.gameObject, out targetLayer))
+            {
+                SetLayerRecursively(entry.gameObject, targetLayer);
+            }
+        }
+
+        private void RefreshMonsterVisualParticles(MonsterVisuals visuals)
+        {
+            if (!CropActive || visuals == null)
+            {
+                return;
+            }
+            int targetLayer;
+            if (!TryGetPresentationLayer(visuals.gameObject, out targetLayer))
+            {
+                return;
+            }
+            /*
+             * UpdateParticles can instantiate new particle children after the
+             * preview hierarchy has already been assigned. Reapply the
+             * existing presentation layer to the complete visuals hierarchy
+             * without taking a compile-time dependency on ParticleSystemModule.
+             */
+            SetLayerRecursively(visuals.gameObject, targetLayer);
         }
 
         private void UpdateExplorationHudLayout()
@@ -996,6 +1325,262 @@ namespace MonsterSanctuaryAspectRatioFix
             ExcludeUiLayerFromOtherCameras();
             UpdateUiCameraTransform();
             UpdateUiQuadLayout();
+            ScheduleFamiliarSelectionCenter(intro);
+            if (IsKeeperIntroCompositionVisible(intro))
+            {
+                AdjustKeeperIntroComposition(intro);
+            }
+        }
+
+        private void ScheduleFamiliarSelectionCenter(MenuList menuList)
+        {
+            if (menuList == null)
+            {
+                return;
+            }
+            foreach (KeepersIntro intro in registeredKeepersIntros)
+            {
+                if (intro != null && intro.SelectFamiliarMenu == menuList)
+                {
+                    ScheduleFamiliarSelectionCenter(intro);
+                    return;
+                }
+            }
+        }
+
+        private void ScheduleFamiliarSelectionCenter(KeepersIntro intro)
+        {
+            if (!CropActive || intro == null || centeredFamiliarSelections.Contains(intro))
+            {
+                return;
+            }
+            if (familiarSelectionLayoutCoroutine != null)
+            {
+                StopCoroutine(familiarSelectionLayoutCoroutine);
+            }
+            familiarSelectionLayoutCoroutine = StartCoroutine(CenterFamiliarSelectionAfterOpening(intro));
+        }
+
+        private IEnumerator CenterFamiliarSelectionAfterOpening(KeepersIntro intro)
+        {
+            /*
+             * Wait for the initial familiar buttons and text meshes to finish
+             * their first layout pass. Center the authored menu and information
+             * panel before the menu becomes interactive so the row does not jump
+             * when the selection controls appear.
+             */
+            yield return null;
+            yield return new WaitForEndOfFrame();
+            familiarSelectionLayoutCoroutine = null;
+            CenterFamiliarSelectionOnce(intro);
+        }
+
+        private void CenterFamiliarSelectionOnce(KeepersIntro intro)
+        {
+            if (!CropActive || intro == null || intro.SelectFamiliarMenu == null ||
+                intro.FamiliarInfoRoot == null || uiRenderCamera == null ||
+                centeredFamiliarSelections.Contains(intro))
+            {
+                return;
+            }
+            Transform menuRoot = intro.SelectFamiliarMenu.RootElement != null
+                ? intro.SelectFamiliarMenu.RootElement.transform
+                : intro.SelectFamiliarMenu.transform;
+            Transform infoRoot = intro.FamiliarInfoRoot.transform;
+            List<Transform> roots = new List<Transform>();
+            if (menuRoot.IsChildOf(infoRoot))
+            {
+                roots.Add(infoRoot);
+            }
+            else
+            {
+                roots.Add(menuRoot);
+                if (!infoRoot.IsChildOf(menuRoot))
+                {
+                    roots.Add(infoRoot);
+                }
+            }
+            bool boundsFound = false;
+            Bounds bounds = new Bounds();
+            HashSet<int> visitedRenderers = new HashSet<int>();
+            foreach (Transform root in roots)
+            {
+                bool includeInactive = root == infoRoot;
+                foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null ||
+                        (!includeInactive && (!renderer.enabled || !renderer.gameObject.activeInHierarchy)) ||
+                        !visitedRenderers.Add(renderer.GetInstanceID()))
+                    {
+                        continue;
+                    }
+                    if (!boundsFound)
+                    {
+                        bounds = renderer.bounds;
+                        boundsFound = true;
+                    }
+                    else
+                    {
+                        bounds.Encapsulate(renderer.bounds);
+                    }
+                }
+            }
+            if (!boundsFound)
+            {
+                return;
+            }
+            Vector3 viewportCenter = uiRenderCamera.WorldToViewportPoint(bounds.center);
+            Vector3 targetWorld = uiRenderCamera.ViewportToWorldPoint(
+                new Vector3(0.5f, viewportCenter.y, viewportCenter.z));
+            Vector3 shift = targetWorld - bounds.center;
+            shift -= uiRenderCamera.transform.forward * Vector3.Dot(shift, uiRenderCamera.transform.forward);
+            foreach (Transform root in roots)
+            {
+                if (!originalFamiliarSelectionLocalPositions.ContainsKey(root))
+                {
+                    originalFamiliarSelectionLocalPositions.Add(root, root.localPosition);
+                }
+                root.position += shift;
+            }
+            centeredFamiliarSelections.Add(intro);
+        }
+
+        private void RestoreFamiliarSelectionLayouts()
+        {
+            if (familiarSelectionLayoutCoroutine != null)
+            {
+                StopCoroutine(familiarSelectionLayoutCoroutine);
+                familiarSelectionLayoutCoroutine = null;
+            }
+            foreach (KeyValuePair<Transform, Vector3> entry in originalFamiliarSelectionLocalPositions)
+            {
+                if (entry.Key != null)
+                {
+                    entry.Key.localPosition = entry.Value;
+                }
+            }
+            originalFamiliarSelectionLocalPositions.Clear();
+            centeredFamiliarSelections.Clear();
+        }
+
+        private bool IsKeeperIntroCompositionVisible(KeepersIntro intro)
+        {
+            if (intro == null)
+            {
+                return false;
+            }
+            foreach (GameObject keeper in intro.Keepers)
+            {
+                if (keeper != null && keeper.activeInHierarchy)
+                {
+                    return true;
+                }
+            }
+            foreach (GameObject familiar in intro.Familiars)
+            {
+                if (familiar != null && familiar.activeInHierarchy)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void AdjustKeeperIntroComposition(KeepersIntro intro)
+        {
+            if (!CropActive || intro == null || primaryCamera == null || adjustedKeeperIntros.Contains(intro))
+            {
+                return;
+            }
+            float horizontalScale = VisibleWorldWidth / OriginalWidth;
+            int pairCount = Mathf.Min(intro.Keepers.Count, intro.Familiars.Count);
+            for (int index = 0; index < pairCount; index++)
+            {
+                ShiftKeeperIntroPair(intro.Keepers[index], intro.Familiars[index], horizontalScale);
+            }
+            for (int index = pairCount; index < intro.Keepers.Count; index++)
+            {
+                ShiftKeeperIntroPair(intro.Keepers[index], null, horizontalScale);
+            }
+            for (int index = pairCount; index < intro.Familiars.Count; index++)
+            {
+                ShiftKeeperIntroPair(null, intro.Familiars[index], horizontalScale);
+            }
+            adjustedKeeperIntros.Add(intro);
+        }
+
+        private void ShiftKeeperIntroPair(GameObject keeper, GameObject familiar, float horizontalScale)
+        {
+            if (keeper == null && familiar == null)
+            {
+                return;
+            }
+            if (keeper != null && !originalKeeperIntroLocalPositions.ContainsKey(keeper.transform))
+            {
+                originalKeeperIntroLocalPositions.Add(keeper.transform, keeper.transform.localPosition);
+            }
+            if (familiar != null && !originalKeeperIntroLocalPositions.ContainsKey(familiar.transform))
+            {
+                originalKeeperIntroLocalPositions.Add(familiar.transform, familiar.transform.localPosition);
+            }
+            Vector3 pairCenter;
+            if (keeper != null && familiar != null)
+            {
+                pairCenter = (keeper.transform.position + familiar.transform.position) / 2f;
+            }
+            else
+            {
+                pairCenter = keeper != null ? keeper.transform.position : familiar.transform.position;
+            }
+            Vector3 viewportCenter = primaryCamera.WorldToViewportPoint(pairCenter);
+            float targetViewportX = 0.5f + (viewportCenter.x - 0.5f) * horizontalScale;
+            Vector3 targetWorld = primaryCamera.ViewportToWorldPoint(
+                new Vector3(targetViewportX, viewportCenter.y, viewportCenter.z));
+            Vector3 shift = targetWorld - pairCenter;
+            shift -= primaryCamera.transform.forward * Vector3.Dot(shift, primaryCamera.transform.forward);
+            if (keeper != null)
+            {
+                keeper.transform.position += shift;
+            }
+            if (familiar != null)
+            {
+                familiar.transform.position += shift;
+            }
+        }
+
+        private void PrepareFamiliarPortraitPosition(KeepersIntro intro)
+        {
+            if (!CropActive || intro == null || intro.FamiliarBig == null)
+            {
+                return;
+            }
+            Transform portrait = intro.FamiliarBig.transform;
+            if (originalKeeperIntroLocalPositions.ContainsKey(portrait))
+            {
+                return;
+            }
+            originalKeeperIntroLocalPositions.Add(portrait, portrait.localPosition);
+            Vector3 position = portrait.localPosition;
+            /*
+             * FamiliarBig is authored to slide in from the original 480-pixel
+             * right edge. Move the complete tween inward by the crop inset so
+             * the large selected-familiar portrait remains fully visible.
+             */
+            position.x -= HorizontalHudInset;
+            portrait.localPosition = position;
+        }
+
+        private void RestoreKeeperIntroLayouts()
+        {
+            foreach (KeyValuePair<Transform, Vector3> entry in originalKeeperIntroLocalPositions)
+            {
+                if (entry.Key != null)
+                {
+                    entry.Key.localPosition = entry.Value;
+                }
+            }
+            originalKeeperIntroLocalPositions.Clear();
+            adjustedKeeperIntros.Clear();
         }
 
         private void ScheduleSkipPromptAnchor(UIController uiController)
@@ -1294,10 +1879,114 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(combatBuffInfoLayoutCoroutine);
                 combatBuffInfoLayoutCoroutine = null;
             }
-            suppressTooltipCompositeForCombatBuffInfo = false;
-            ApplyTooltipCompositeVisibility();
+            SetCombatBuffInfoCompositePriority(false);
+            RestoreVictoryBannerLayout(combatUi != null ? combatUi.VictoryScreen : null);
             SetCombatUiHierarchy(combatUi, false);
             activeCombatUi = null;
+        }
+
+        private void PositionVictoryBannerAtTop(VictoryScreen victoryScreen)
+        {
+            if (!CropActive || victoryScreen == null || primaryCamera == null)
+            {
+                return;
+            }
+            Transform root = victoryScreen.transform;
+            Vector3 originalLocalPosition;
+            if (!originalVictoryBannerLocalPositions.TryGetValue(root, out originalLocalPosition))
+            {
+                originalLocalPosition = root.localPosition;
+                originalVictoryBannerLocalPositions.Add(root, originalLocalPosition);
+            }
+
+            /*
+             * Preserve the game's normal Victory -> Combat Result sequence.
+             * The banner stays on its original world presentation so its top
+             * edge can reach the physical output edge instead of the centered
+             * 16:9 UI composite. Only its local Y position is changed once,
+             * immediately before the game's existing scale tween begins.
+             */
+            RestoreOriginalLayersRecursively(victoryScreen.gameObject);
+            root.localPosition = originalLocalPosition;
+
+            const float TopAnchorPixels = 26f;
+            Vector3 viewportPosition = primaryCamera.WorldToViewportPoint(root.position);
+            if (float.IsNaN(viewportPosition.z) || float.IsInfinity(viewportPosition.z))
+            {
+                return;
+            }
+            viewportPosition.y = 1f - TopAnchorPixels / OriginalHeight;
+            Vector3 targetWorldPosition = primaryCamera.ViewportToWorldPoint(viewportPosition);
+            Vector3 targetLocalPosition = root.parent != null
+                ? root.parent.InverseTransformPoint(targetWorldPosition)
+                : targetWorldPosition;
+
+            Vector3 anchoredLocalPosition = originalLocalPosition;
+            anchoredLocalPosition.y = targetLocalPosition.y;
+            root.localPosition = anchoredLocalPosition;
+        }
+
+        private void AssignExistingTitleAnimations()
+        {
+            foreach (TitleAnimation titleAnimation in Resources.FindObjectsOfTypeAll<TitleAnimation>())
+            {
+                AssignTitleAnimationPresentation(titleAnimation);
+            }
+        }
+
+        private void AssignTitleAnimationPresentation(TitleAnimation titleAnimation)
+        {
+            if (!CropActive || titleAnimation == null || titleAnimation.TitleInstances == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            if (!UiCompositeActive || uiLayer < 0)
+            {
+                return;
+            }
+
+            /*
+             * The layered logo sprites are animated independently and are
+             * not guaranteed to share the TitleAnimation transform as their
+             * effective presentation root. Render the authored 480x270 logo
+             * through the existing UI composite instead of trying to resize
+             * or reposition its controller transform. The child scale and
+             * color tweens continue unchanged while the complete title fits
+             * the supported output automatically.
+             */
+            foreach (tk2dSprite titleInstance in titleAnimation.TitleInstances)
+            {
+                if (titleInstance != null)
+                {
+                    AssignUiLayerRecursively(titleInstance.gameObject);
+                }
+            }
+            ExcludeUiLayerFromOtherCameras();
+        }
+        private void RestoreVictoryBannerLayout(VictoryScreen victoryScreen)
+        {
+            if (victoryScreen == null)
+            {
+                return;
+            }
+            Vector3 originalLocalPosition;
+            if (originalVictoryBannerLocalPositions.TryGetValue(victoryScreen.transform, out originalLocalPosition))
+            {
+                victoryScreen.transform.localPosition = originalLocalPosition;
+            }
+        }
+
+        private void RestoreVictoryBannerLayouts()
+        {
+            foreach (KeyValuePair<Transform, Vector3> entry in originalVictoryBannerLocalPositions)
+            {
+                if (entry.Key != null)
+                {
+                    entry.Key.localPosition = entry.Value;
+                }
+            }
+            originalVictoryBannerLocalPositions.Clear();
         }
 
         private void SetCombatMenuListRoots(CombatUIController combatUi, bool useUiLayer)
@@ -1343,13 +2032,11 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
             /*
-             * The normal combat skill/item tooltip remains logically open
-             * while Buff Info is displayed. Hide only its presentation quad
-             * so it cannot cover the gray BuffInfo panel, then restore it
-             * unchanged when Buff Info closes.
+             * Keep the normal combat skill/item tooltip visible. Temporarily
+             * draw the regular UI composite above the tooltip composite so the
+             * Buff Info panel wins only where the two presentations overlap.
              */
-            suppressTooltipCompositeForCombatBuffInfo = true;
-            ApplyTooltipCompositeVisibility();
+            SetCombatBuffInfoCompositePriority(true);
             RestoreBuffInfoIconHierarchy(buffInfoMenu);
             ScheduleCombatBuffInfoLayout(buffInfoMenu);
         }
@@ -1371,8 +2058,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(combatBuffInfoLayoutCoroutine);
                 combatBuffInfoLayoutCoroutine = null;
             }
-            suppressTooltipCompositeForCombatBuffInfo = false;
-            ApplyTooltipCompositeVisibility();
+            SetCombatBuffInfoCompositePriority(false);
         }
 
         private void ApplyTooltipCompositeVisibility()
@@ -1499,26 +2185,174 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
-        private void OnMenuListOpened(MenuList menuList)
+        private bool RefreshMenuPresentation(MenuList menuList)
         {
-            if (!CropActive || activeCombatUi == null || menuList == null)
+            int targetLayer;
+            if (!TryGetMenuPresentationLayer(menuList, out targetLayer) &&
+                !TryInheritModalMenuPresentation(menuList, out targetLayer))
+            {
+                return false;
+            }
+            ApplyMenuPresentationLayer(menuList, targetLayer);
+            return true;
+        }
+
+        private bool TryInheritModalMenuPresentation(MenuList menuList, out int targetLayer)
+        {
+            targetLayer = -1;
+            if (menuList == null)
+            {
+                return false;
+            }
+            int menuIndex = MenuList.MenuStack.LastIndexOf(menuList);
+            if (menuIndex <= 0)
+            {
+                return false;
+            }
+            MenuList parentMenu = MenuList.MenuStack[menuIndex - 1];
+            if (parentMenu == null || !parentMenu.IsLocked ||
+                !TryGetMenuPresentationLayer(parentMenu, out targetLayer))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private void ApplyMenuPresentationLayer(MenuList menuList, int targetLayer)
+        {
+            if (menuList == null || targetLayer < 0)
             {
                 return;
             }
-            if (activeCombatUi.BuffInfoMenu != null && menuList == activeCombatUi.BuffInfoMenu.MenuList)
+            SetGameObjectLayer(menuList.gameObject, targetLayer);
+            SetLayerRecursively(menuList.RootElement, targetLayer);
+            if (menuList.SelectionView != null)
+            {
+                SetLayerRecursively(menuList.SelectionView.gameObject, targetLayer);
+            }
+            if (menuList.OpeningAnim != null)
+            {
+                GameObject openingRoot = menuList.OpeningAnim.RootElement != null
+                    ? menuList.OpeningAnim.RootElement
+                    : menuList.OpeningAnim.gameObject;
+                SetLayerRecursively(openingRoot, targetLayer);
+                if (menuList.OpeningAnim.SubElements != null)
+                {
+                    foreach (GameObject element in menuList.OpeningAnim.SubElements)
+                    {
+                        SetLayerRecursively(element, targetLayer);
+                    }
+                }
+            }
+            if (menuList.Lists == null)
+            {
+                return;
+            }
+            foreach (List<MenuListItem> list in menuList.Lists)
+            {
+                if (list == null)
+                {
+                    continue;
+                }
+                foreach (MenuListItem item in list)
+                {
+                    if (item != null)
+                    {
+                        SetLayerRecursively(item.gameObject, targetLayer);
+                    }
+                }
+            }
+        }
+
+        private void RefreshMenuItemPresentation(MenuList menuList, MenuListItem item)
+        {
+            int targetLayer;
+            if (item != null && TryGetMenuPresentationLayer(menuList, out targetLayer))
+            {
+                SetLayerRecursively(item.gameObject, targetLayer);
+            }
+        }
+
+        private void RefreshMenuItemPresentation(MenuList menuList, List<MenuListItem> items)
+        {
+            if (items == null)
+            {
+                return;
+            }
+            foreach (MenuListItem item in items)
+            {
+                RefreshMenuItemPresentation(menuList, item);
+            }
+        }
+
+        private void RefreshSelectionViewPresentation(SelectionView selectionView)
+        {
+            int targetLayer;
+            if (selectionView != null && TryGetPresentationLayer(selectionView.gameObject, out targetLayer))
+            {
+                SetLayerRecursively(selectionView.gameObject, targetLayer);
+            }
+        }
+
+        private void RefreshOpeningAnimationPresentation(UIOpeningAnim openingAnim)
+        {
+            if (openingAnim == null)
+            {
+                return;
+            }
+            GameObject root = openingAnim.RootElement != null ? openingAnim.RootElement : openingAnim.gameObject;
+            int targetLayer;
+            if (!TryGetPresentationLayer(root, out targetLayer))
+            {
+                return;
+            }
+            SetLayerRecursively(root, targetLayer);
+            if (openingAnim.SubElements == null)
+            {
+                return;
+            }
+            foreach (GameObject element in openingAnim.SubElements)
+            {
+                SetLayerRecursively(element, targetLayer);
+            }
+        }
+
+        private void RefreshOpeningAnimationElementPresentation(UIOpeningAnim openingAnim, GameObject element)
+        {
+            if (openingAnim == null || element == null)
+            {
+                return;
+            }
+            GameObject root = openingAnim.RootElement != null ? openingAnim.RootElement : openingAnim.gameObject;
+            int targetLayer;
+            if (TryGetPresentationLayer(root, out targetLayer))
+            {
+                SetLayerRecursively(element, targetLayer);
+            }
+        }
+
+        private void OnMenuListOpened(MenuList menuList)
+        {
+            if (!CropActive || menuList == null)
+            {
+                return;
+            }
+            if (activeCombatUi?.BuffInfoMenu != null && menuList == activeCombatUi.BuffInfoMenu.MenuList)
             {
                 RestoreBuffInfoIconHierarchy(activeCombatUi.BuffInfoMenu);
-                ExcludeUiLayerFromOtherCameras();
+                RefreshUiInputState();
                 return;
             }
             /*
-             * Combat submenus can open well after the short combat
-             * initialization coroutine has ended. Reassign only the
-             * menu that just opened and its connected logical roots.
-             * This is event-driven and performs no per-frame searches.
+             * Opening a menu is the universal inheritance boundary. Only
+             * menus already belonging to the UI or tooltip presentation are
+             * refreshed; world-space MenuLists remain untouched.
              */
-            SetMenuListGraph(menuList, new HashSet<int>(), true);
-            ExcludeUiLayerFromOtherCameras();
+            if (RefreshMenuPresentation(menuList))
+            {
+                ScheduleFamiliarSelectionCenter(menuList);
+            }
+            RefreshUiInputState();
         }
 
         private void ApplyHudHorizontalOffset(Transform transform, float horizontalOffset)
@@ -1747,6 +2581,19 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
+        private void SetGameObjectLayer(GameObject gameObject, int targetLayer)
+        {
+            if (gameObject == null || targetLayer < 0)
+            {
+                return;
+            }
+            if (!originalLayers.ContainsKey(gameObject))
+            {
+                originalLayers.Add(gameObject, gameObject.layer);
+            }
+            gameObject.layer = targetLayer;
+        }
+
         private void SetLayerRecursively(GameObject root, int targetLayer)
         {
             if (root == null || targetLayer < 0)
@@ -1755,16 +2602,10 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
             {
-                if (child == null)
+                if (child != null)
                 {
-                    continue;
+                    SetGameObjectLayer(child.gameObject, targetLayer);
                 }
-                GameObject gameObject = child.gameObject;
-                if (!originalLayers.ContainsKey(gameObject))
-                {
-                    originalLayers.Add(gameObject, gameObject.layer);
-                }
-                gameObject.layer = targetLayer;
             }
         }
 
@@ -2050,6 +2891,27 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
+        [HarmonyPatch(typeof(KeepersIntro), "ShowKeepers")]
+        private static class KeepersIntroCompositionPatch
+        {
+
+            private static void Postfix(KeepersIntro __instance)
+            {
+                Instance?.AdjustKeeperIntroComposition(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(KeepersIntro), "HideOtherKeepers", new System.Type[] { typeof(bool) })]
+        private static class KeepersIntroFamiliarPortraitPatch
+        {
+
+            private static void Prefix(KeepersIntro __instance)
+            {
+                Instance?.PrepareFamiliarPortraitPosition(__instance);
+            }
+        }
+
+
         [HarmonyPatch(typeof(UIController), nameof(UIController.ShowSkipButton))]
         private static class HoldSkipPromptAnchorPatch
         {
@@ -2131,6 +2993,106 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
+        [HarmonyPatch(typeof(BuffInfoOverlay), "Open")]
+        private static class BuffInfoOverlayOpenShadePatch
+        {
+
+            private static void Postfix(BuffInfoOverlay __instance)
+            {
+                Instance?.ShowBuffInfoUiShade(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(BuffInfoOverlay), "Close")]
+        private static class BuffInfoOverlayCloseShadePatch
+        {
+
+            private static void Postfix()
+            {
+                Instance?.HideBuffInfoUiShade();
+            }
+        }
+
+        [HarmonyPatch(typeof(BuffInfoOverlay), "GetBuffInfo")]
+        private static class BuffInfoOverlayGeneratedEntryLayerPatch
+        {
+
+            private static void Postfix(BuffInfoOverlay __instance, BuffInfo __result)
+            {
+                Instance?.RefreshBuffInfoPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(ScrollingCreditsEntry), nameof(ScrollingCreditsEntry.SetText))]
+        private static class ScrollingCreditsEntryLayerPatch
+        {
+
+            private static void Postfix(ScrollingCreditsEntry __instance)
+            {
+                Instance?.RefreshScrollingCreditsEntryPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(NewGameMenu), nameof(NewGameMenu.Open))]
+        private static class NewGameDescriptionPresentationPatch
+        {
+
+            private static void Postfix(NewGameMenu __instance)
+            {
+                Instance?.AssignNewGameDescriptionPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterVisuals), nameof(MonsterVisuals.Init))]
+        private static class MonsterVisualsInitParticleLayerPatch
+        {
+
+            private static void Postfix(MonsterVisuals __instance)
+            {
+                Instance?.RefreshMonsterVisualParticles(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterVisuals), "UpdateParticles")]
+        private static class MonsterVisualsUpdateParticleLayerPatch
+        {
+
+            private static void Postfix(MonsterVisuals __instance)
+            {
+                Instance?.RefreshMonsterVisualParticles(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MultiChoicePopup), nameof(MultiChoicePopup.Open))]
+        private static class MultiChoicePopupDescriptionResetPatch
+        {
+
+            private static void Prefix(MultiChoicePopup __instance)
+            {
+                Instance?.RestoreMultiChoiceDescriptionPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MultiChoicePopup), nameof(MultiChoicePopup.Close))]
+        private static class MultiChoicePopupDescriptionClosePatch
+        {
+
+            private static void Postfix(MultiChoicePopup __instance)
+            {
+                Instance?.RestoreMultiChoiceDescriptionPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(OnlineArenaMenu), nameof(OnlineArenaMenu.OpenHostJoinMenu))]
+        private static class OnlineArenaDescriptionPresentationPatch
+        {
+
+            private static void Postfix()
+            {
+                Instance?.AssignOnlineArenaDescriptionPresentation();
+            }
+        }
+
         [HarmonyPatch(typeof(BuffInfoMenu), nameof(BuffInfoMenu.Open))]
         private static class CombatBuffInfoOpenPresentationPatch
         {
@@ -2162,12 +3124,122 @@ namespace MonsterSanctuaryAspectRatioFix
         }
 
         [HarmonyPatch(typeof(MenuList), nameof(MenuList.Open))]
-        private static class CombatMenuListOpenLayerPatch
+        private static class MenuListOpenLayerPatch
         {
 
             private static void Postfix(MenuList __instance)
             {
                 Instance?.OnMenuListOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.SetSelecting))]
+        private static class MenuListSelectingStatePatch
+        {
+
+            private static void Postfix()
+            {
+                Instance?.RefreshUiInputState();
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.SetLocked))]
+        private static class MenuListLockedStatePatch
+        {
+
+            private static void Postfix()
+            {
+                Instance?.RefreshUiInputState();
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.AddMenuItem))]
+        private static class MenuListAddMenuItemLayerPatch
+        {
+
+            private static void Postfix(MenuList __instance, MenuListItem item)
+            {
+                Instance?.RefreshMenuItemPresentation(__instance, item);
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.AddDisplayable))]
+        private static class MenuListAddDisplayableLayerPatch
+        {
+
+            private static void Postfix(MenuList __instance, MenuListItem __result)
+            {
+                Instance?.RefreshMenuItemPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.AddTextItem))]
+        private static class MenuListAddTextItemLayerPatch
+        {
+
+            private static void Postfix(MenuList __instance, MenuListItem __result)
+            {
+                Instance?.RefreshMenuItemPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(MenuList), nameof(MenuList.FillList))]
+        private static class MenuListFillListLayerPatch
+        {
+
+            private static void Postfix(MenuList __instance, List<MenuListItem> list)
+            {
+                Instance?.RefreshMenuItemPresentation(__instance, list);
+            }
+        }
+
+        [HarmonyPatch(typeof(SelectionView), nameof(SelectionView.Init))]
+        private static class SelectionViewInitLayerPatch
+        {
+
+            private static void Postfix(SelectionView __instance)
+            {
+                Instance?.RefreshSelectionViewPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(UIOpeningAnim), nameof(UIOpeningAnim.Open))]
+        private static class UiOpeningAnimationOpenLayerPatch
+        {
+
+            private static void Prefix(UIOpeningAnim __instance)
+            {
+                Instance?.RefreshOpeningAnimationPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(UIOpeningAnim), nameof(UIOpeningAnim.Add))]
+        private static class UiOpeningAnimationAddLayerPatch
+        {
+
+            private static void Postfix(UIOpeningAnim __instance, GameObject element)
+            {
+                Instance?.RefreshOpeningAnimationElementPresentation(__instance, element);
+            }
+        }
+
+        [HarmonyPatch(typeof(TitleAnimation), "Start")]
+        private static class TitleAnimationFitPatch
+        {
+
+            private static void Postfix(TitleAnimation __instance)
+            {
+                Instance?.AssignTitleAnimationPresentation(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(VictoryScreen), nameof(VictoryScreen.StartVictoryScreen))]
+        private static class VictoryScreenTopAnchorPatch
+        {
+
+            private static void Prefix(VictoryScreen __instance)
+            {
+                Instance?.PositionVictoryBannerAtTop(__instance);
             }
         }
 
