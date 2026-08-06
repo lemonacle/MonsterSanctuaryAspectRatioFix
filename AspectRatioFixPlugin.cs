@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.0.0")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.0")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -22,8 +22,10 @@ namespace MonsterSanctuaryAspectRatioFix
         private static float HorizontalHudInset => (OriginalWidth - VisibleWorldWidth) / 2f;
         internal static bool CropActive { get; private set; }
         internal static bool UiCompositeActive { get; private set; }
+        internal static bool TooltipCompositeActive { get; private set; }
         internal static bool UiInputActive { get; private set; }
         internal static int UiLayerIndex { get; private set; } = -1;
+        internal static int TooltipLayerIndex { get; private set; } = -1;
         internal static Rect UiScreenRectPixels { get; private set; }
         private static AspectRatioFixPlugin Instance { get; set; }
         private int previousScreenWidth;
@@ -44,6 +46,14 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject uiQuadObject;
         private MeshRenderer uiQuadRenderer;
         private Material uiQuadMaterial;
+        private int tooltipLayer = -1;
+        private GameObject tooltipCameraObject;
+        private Camera tooltipRenderCamera;
+        private tk2dCamera tooltipRenderTkCamera;
+        private RenderTexture tooltipRenderTexture;
+        private GameObject tooltipQuadObject;
+        private MeshRenderer tooltipQuadRenderer;
+        private Material tooltipQuadMaterial;
         private readonly Dictionary<GameObject, int> originalLayers = new Dictionary<GameObject, int>();
         private readonly Dictionary<Camera, int> originalCameraMasks = new Dictionary<Camera, int>();
         private float nextUiLayerRefresh;
@@ -70,7 +80,9 @@ namespace MonsterSanctuaryAspectRatioFix
         private Vector2[] cachedWorldCroppedUvs;
         private bool cachedWorldUvIsCropped;
         private Coroutine combatInitializationCoroutine;
+        private Coroutine combatBuffInfoLayoutCoroutine;
         private CombatUIController activeCombatUi;
+        private bool suppressTooltipCompositeForCombatBuffInfo;
         /*
          * Skip prompts are anchored only when shown. Their renderer
          * bounds are not recalculated during normal gameplay.
@@ -104,7 +116,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.0.0 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.0 4:3 and 16:10 camera-policy plugin loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -151,7 +163,9 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             UpdateExplorationHudLayout();
             UpdateUiCameraTransform();
+            UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
+            UpdateTooltipQuadLayout();
             UiInputActive = IsUiLayerMenuOpen();
         }
 
@@ -234,7 +248,9 @@ namespace MonsterSanctuaryAspectRatioFix
             ExcludeUiLayerFromOtherCameras();
             UpdateExplorationHudLayout();
             UpdateUiCameraTransform();
+            UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
+            UpdateTooltipQuadLayout();
             UiInputActive = IsUiLayerMenuOpen();
             if (RelativeOriginDirtyField != null)
             {
@@ -248,7 +264,8 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             Logger.LogInfo($"Aspect Ratio Fix applied with separate UI composite: " +
                 $"world={VisibleWorldWidth:0}x270 crop, UI=480x270, " +
-                $"screen={Screen.width}x{Screen.height}, " + $"uiLayer={uiLayer}.");
+                $"screen={Screen.width}x{Screen.height}, " +
+                $"uiLayer={uiLayer}, tooltipLayer={tooltipLayer}.");
         }
 
         private bool TrySelectAspectProfile(float screenAspect)
@@ -299,7 +316,9 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             CropActive = false;
             UiCompositeActive = false;
+            TooltipCompositeActive = false;
             UiInputActive = false;
+            suppressTooltipCompositeForCombatBuffInfo = false;
             RestoreExplorationHudLayout();
             MeshRenderer worldQuad = FinalCamRectField?.GetValue(pixelCamera) as MeshRenderer;
             if (worldQuad != null)
@@ -316,6 +335,14 @@ namespace MonsterSanctuaryAspectRatioFix
             if (uiQuadRenderer != null)
             {
                 uiQuadRenderer.enabled = false;
+            }
+            if (tooltipRenderCamera != null)
+            {
+                tooltipRenderCamera.enabled = false;
+            }
+            if (tooltipQuadRenderer != null)
+            {
+                tooltipQuadRenderer.enabled = false;
             }
             Logger.LogInfo($"Aspect Ratio Fix skipped at " + $"{Screen.width}x{Screen.height}.");
         }
@@ -349,6 +376,16 @@ namespace MonsterSanctuaryAspectRatioFix
                     return;
                 }
             }
+            if (tooltipLayer < 0)
+            {
+                tooltipLayer = FindUnusedLayer(uiLayer);
+                TooltipLayerIndex = tooltipLayer;
+                if (tooltipLayer < 0)
+                {
+                    Logger.LogError("Aspect Ratio Fix could not find a second unused Unity layer " +
+                        "for bottom-anchored tooltips.");
+                }
+            }
             if (uiRenderTexture == null)
             {
                 uiRenderTexture = new RenderTexture(OriginalWidth, OriginalHeight, 24, RenderTextureFormat.ARGB32);
@@ -360,6 +397,17 @@ namespace MonsterSanctuaryAspectRatioFix
                 uiRenderTexture.antiAliasing = 1;
                 uiRenderTexture.Create();
             }
+            if (tooltipLayer >= 0 && tooltipRenderTexture == null)
+            {
+                tooltipRenderTexture = new RenderTexture(OriginalWidth, OriginalHeight, 24, RenderTextureFormat.ARGB32);
+                tooltipRenderTexture.name = "AspectRatioFix_Tooltips_480x270";
+                tooltipRenderTexture.filterMode = FilterMode.Point;
+                tooltipRenderTexture.wrapMode = TextureWrapMode.Clamp;
+                tooltipRenderTexture.useMipMap = false;
+                tooltipRenderTexture.autoGenerateMips = false;
+                tooltipRenderTexture.antiAliasing = 1;
+                tooltipRenderTexture.Create();
+            }
             if (uiCameraObject == null)
             {
                 CreateUiCamera();
@@ -367,6 +415,14 @@ namespace MonsterSanctuaryAspectRatioFix
             if (uiQuadObject == null)
             {
                 CreateUiQuad();
+            }
+            if (tooltipLayer >= 0 && tooltipCameraObject == null)
+            {
+                CreateTooltipCamera();
+            }
+            if (tooltipLayer >= 0 && tooltipQuadObject == null)
+            {
+                CreateTooltipQuad();
             }
             if (uiRenderCamera != null)
             {
@@ -376,10 +432,19 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 uiQuadRenderer.enabled = true;
             }
+            if (tooltipRenderCamera != null)
+            {
+                tooltipRenderCamera.enabled = true;
+            }
+            if (tooltipQuadRenderer != null)
+            {
+                tooltipQuadRenderer.enabled = !suppressTooltipCompositeForCombatBuffInfo;
+            }
             UiCompositeActive = uiRenderCamera != null && uiQuadRenderer != null;
+            TooltipCompositeActive = tooltipRenderCamera != null && tooltipQuadRenderer != null;
         }
 
-        private int FindUnusedLayer()
+        private int FindUnusedLayer(int excludedLayer = -1)
         {
             bool[] usedLayers = new bool[32];
             GameObject[] objects = Resources.FindObjectsOfTypeAll<GameObject>();
@@ -392,13 +457,13 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             for (int layer = 30; layer >= 8; layer--)
             {
-                if (!usedLayers[layer] && string.IsNullOrEmpty(LayerMask.LayerToName(layer)))
+                if (layer != excludedLayer && !usedLayers[layer] && string.IsNullOrEmpty(LayerMask.LayerToName(layer)))
                 {
                     return layer;
                 }
             }
             // Layer 30 is the least likely remaining layer to be used.
-            if (!usedLayers[30])
+            if (excludedLayer != 30 && !usedLayers[30])
             {
                 return 30;
             }
@@ -476,16 +541,107 @@ namespace MonsterSanctuaryAspectRatioFix
             uiQuadMaterial.color = Color.white;
             uiQuadMaterial.renderQueue = 4000;
             uiQuadRenderer.sharedMaterial = uiQuadMaterial;
-            uiQuadRenderer.sortingOrder = 32767;
+            uiQuadRenderer.sortingOrder = 32766;
             // The duplicated world quad contains cropped UVs; restore all UI.
             SetHorizontalUvRange(uiQuadRenderer, 0f, 1f);
+        }
+
+        private void CreateTooltipCamera()
+        {
+            tooltipCameraObject = new GameObject("AspectRatioFix Tooltip Camera");
+            tooltipCameraObject.SetActive(false);
+            tooltipCameraObject.transform.SetParent(primaryCamera.transform, worldPositionStays: false);
+            tooltipCameraObject.transform.localPosition = Vector3.zero;
+            tooltipCameraObject.transform.localRotation = Quaternion.identity;
+            tooltipCameraObject.transform.localScale = Vector3.one;
+            tooltipRenderCamera = tooltipCameraObject.AddComponent<Camera>();
+            tooltipRenderCamera.CopyFrom(primaryCamera);
+            tooltipRenderCamera.cullingMask = 1 << tooltipLayer;
+            tooltipRenderCamera.clearFlags = CameraClearFlags.SolidColor;
+            tooltipRenderCamera.backgroundColor = Color.clear;
+            tooltipRenderCamera.targetTexture = tooltipRenderTexture;
+            tooltipRenderCamera.rect = new Rect(0f, 0f, 1f, 1f);
+            tooltipRenderCamera.depth = primaryCamera.depth + 11f;
+            tooltipRenderCamera.allowHDR = false;
+            tooltipRenderCamera.allowMSAA = false;
+            tooltipRenderTkCamera = tooltipCameraObject.AddComponent<tk2dCamera>();
+            tooltipRenderTkCamera.InheritConfig = primaryTkCamera;
+            tooltipRenderTkCamera.nativeResolutionWidth = OriginalWidth;
+            tooltipRenderTkCamera.nativeResolutionHeight = OriginalHeight;
+            tooltipCameraObject.SetActive(true);
+            tooltipRenderTkCamera.UpdateCameraMatrix();
+        }
+
+        private void CreateTooltipQuad()
+        {
+            tooltipQuadObject = UnityEngine.Object.Instantiate(finalWorldQuad.gameObject);
+            tooltipQuadObject.name = "AspectRatioFix Bottom Tooltip Composite Quad";
+            tooltipQuadObject.transform.SetParent(finalWorldQuad.transform.parent, worldPositionStays: false);
+            tooltipQuadObject.transform.localPosition = finalWorldQuad.transform.localPosition;
+            tooltipQuadObject.transform.localRotation = finalWorldQuad.transform.localRotation;
+            tooltipQuadObject.transform.localScale = finalWorldQuad.transform.localScale;
+            tooltipQuadObject.layer = finalWorldQuad.gameObject.layer;
+            tooltipQuadRenderer = tooltipQuadObject.GetComponent<MeshRenderer>();
+            if (tooltipQuadRenderer == null)
+            {
+                Logger.LogError("Aspect Ratio Fix could not create the bottom-tooltip composite quad.");
+                UnityEngine.Object.Destroy(tooltipQuadObject);
+                tooltipQuadObject = null;
+                return;
+            }
+            Shader shader = Shader.Find("Unlit/Transparent");
+            if (shader == null)
+            {
+                shader = Shader.Find("Sprites/Default");
+            }
+            if (shader == null)
+            {
+                Logger.LogWarning("A transparent built-in shader was not found. " +
+                    "Falling back to a copy of the game's final material for tooltips.");
+                tooltipQuadMaterial = new Material(finalWorldQuad.sharedMaterial);
+            }
+            else
+            {
+                tooltipQuadMaterial = new Material(shader);
+            }
+            tooltipQuadMaterial.name = "AspectRatioFix Bottom Tooltip Composite Material";
+            tooltipQuadMaterial.mainTexture = tooltipRenderTexture;
+            tooltipQuadMaterial.color = Color.white;
+            tooltipQuadMaterial.renderQueue = 4001;
+            tooltipQuadRenderer.sharedMaterial = tooltipQuadMaterial;
+            tooltipQuadRenderer.sortingOrder = 32767;
+            // The duplicated world quad contains cropped UVs; restore the full 480x270 tooltip frame.
+            SetHorizontalUvRange(tooltipQuadRenderer, 0f, 1f);
         }
 
         private void DestroyUiPipeline()
         {
             UiCompositeActive = false;
+            TooltipCompositeActive = false;
             UiInputActive = false;
             UiLayerIndex = -1;
+            TooltipLayerIndex = -1;
+            if (tooltipQuadObject != null)
+            {
+                UnityEngine.Object.Destroy(tooltipQuadObject);
+                tooltipQuadObject = null;
+            }
+            if (tooltipCameraObject != null)
+            {
+                UnityEngine.Object.Destroy(tooltipCameraObject);
+                tooltipCameraObject = null;
+            }
+            if (tooltipQuadMaterial != null)
+            {
+                UnityEngine.Object.Destroy(tooltipQuadMaterial);
+                tooltipQuadMaterial = null;
+            }
+            if (tooltipRenderTexture != null)
+            {
+                tooltipRenderTexture.Release();
+                UnityEngine.Object.Destroy(tooltipRenderTexture);
+                tooltipRenderTexture = null;
+            }
             if (uiQuadObject != null)
             {
                 UnityEngine.Object.Destroy(uiQuadObject);
@@ -507,6 +663,9 @@ namespace MonsterSanctuaryAspectRatioFix
                 UnityEngine.Object.Destroy(uiRenderTexture);
                 uiRenderTexture = null;
             }
+            tooltipRenderCamera = null;
+            tooltipRenderTkCamera = null;
+            tooltipQuadRenderer = null;
             uiRenderCamera = null;
             uiRenderTkCamera = null;
             uiInputCamera = null;
@@ -524,6 +683,19 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderCamera.nearClipPlane = primaryCamera.nearClipPlane;
             uiRenderCamera.farClipPlane = primaryCamera.farClipPlane;
             uiRenderTkCamera?.UpdateCameraMatrix();
+        }
+
+        private void UpdateTooltipCameraTransform()
+        {
+            if (!TooltipCompositeActive || tooltipRenderCamera == null || primaryCamera == null)
+            {
+                return;
+            }
+            tooltipCameraObject.transform.localPosition = Vector3.zero;
+            tooltipCameraObject.transform.localRotation = Quaternion.identity;
+            tooltipRenderCamera.nearClipPlane = primaryCamera.nearClipPlane;
+            tooltipRenderCamera.farClipPlane = primaryCamera.farClipPlane;
+            tooltipRenderTkCamera?.UpdateCameraMatrix();
         }
 
         private void UpdateUiQuadLayout()
@@ -563,6 +735,42 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             UiScreenRectPixels = new Rect((Screen.width - uiPixelWidth) / 2f, (Screen.height - uiPixelHeight) / 2f, uiPixelWidth,
                 uiPixelHeight);
+        }
+
+        private void UpdateTooltipQuadLayout()
+        {
+            if (!TooltipCompositeActive || tooltipQuadRenderer == null || finalWorldQuad == null || finalTkCamera == null ||
+                Screen.width <= 0 || Screen.height <= 0)
+            {
+                return;
+            }
+            /*
+             * Tooltips keep the same 16:9 scale and full 480-pixel width as
+             * the regular UI composite. Only their presentation quad moves
+             * downward so the authored bottom edge meets the physical output
+             * bottom. This avoids enlarging/cropping long tooltip text.
+             */
+            float screenAspect = Screen.width / (float)Screen.height;
+            float widthRatio = 1f;
+            float heightRatio = 1f;
+            if (screenAspect < UiAspect)
+            {
+                heightRatio = screenAspect / UiAspect;
+            }
+            else
+            {
+                widthRatio = UiAspect / screenAspect;
+            }
+            tooltipQuadObject.transform.localScale = new Vector3(finalWorldQuad.transform.localScale.x * widthRatio,
+                finalWorldQuad.transform.localScale.y * heightRatio, finalWorldQuad.transform.localScale.z);
+            Vector3 center = finalWorldQuad.bounds.center;
+            if (heightRatio < 1f)
+            {
+                float bottomAnchorShift = finalWorldQuad.bounds.size.y * (1f - heightRatio) / 2f;
+                center -= finalTkCamera.transform.up * bottomAnchorShift;
+            }
+            center -= finalTkCamera.transform.forward * 0.02f;
+            tooltipQuadObject.transform.position = center;
         }
 
         private bool IsUiLayerMenuOpen()
@@ -648,6 +856,48 @@ namespace MonsterSanctuaryAspectRatioFix
                     AssignUiLayerRecursively(mainMenu.MenuTooltip);
                 }
             }
+            AssignKnownTooltipObjects();
+        }
+
+        private void AssignKnownTooltipObjects()
+        {
+            if (!CropActive || !TooltipCompositeActive || tooltipLayer < 0)
+            {
+                return;
+            }
+            foreach (ItemTooltip tooltip in Resources.FindObjectsOfTypeAll<ItemTooltip>())
+            {
+                AssignTooltipComponent(tooltip);
+            }
+            foreach (SkillTooltip tooltip in Resources.FindObjectsOfTypeAll<SkillTooltip>())
+            {
+                AssignTooltipComponent(tooltip);
+            }
+            foreach (FollowerTooltip tooltip in Resources.FindObjectsOfTypeAll<FollowerTooltip>())
+            {
+                AssignTooltipComponent(tooltip);
+            }
+            foreach (MonsterTeamTooltip tooltip in Resources.FindObjectsOfTypeAll<MonsterTeamTooltip>())
+            {
+                AssignTooltipComponent(tooltip);
+            }
+            foreach (LeaderboardTooltip tooltip in Resources.FindObjectsOfTypeAll<LeaderboardTooltip>())
+            {
+                AssignTooltipComponent(tooltip);
+            }
+        }
+
+        private void OnTooltipOpened(Component tooltip)
+        {
+            if (!CropActive || tooltip == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            AssignTooltipComponent(tooltip);
+            ExcludeUiLayerFromOtherCameras();
+            UpdateTooltipCameraTransform();
+            UpdateTooltipQuadLayout();
         }
 
         private void UpdateExplorationHudLayout()
@@ -907,6 +1157,11 @@ namespace MonsterSanctuaryAspectRatioFix
                 UpdateUiCameraTransform();
                 UpdateUiQuadLayout();
             }
+            if (TooltipCompositeActive)
+            {
+                UpdateTooltipCameraTransform();
+                UpdateTooltipQuadLayout();
+            }
             return true;
         }
 
@@ -926,7 +1181,14 @@ namespace MonsterSanctuaryAspectRatioFix
             SetUiComponentLayer(combatUi.OnlineResultScreen, useUiLayer);
             SetUiComponentLayer(combatUi.ExpScreen, useUiLayer);
             SetUiComponentLayer(combatUi.VictoryScreen, useUiLayer);
-            SetUiComponentLayer(combatUi.Tooltip, useUiLayer);
+            if (useUiLayer)
+            {
+                AssignTooltipComponent(combatUi.Tooltip);
+            }
+            else
+            {
+                SetUiComponentLayer(combatUi.Tooltip, false);
+            }
             SetUiComponentLayer(combatUi.ComboView, useUiLayer);
             SetUiComponentLayer(combatUi.MonsterInfo, useUiLayer);
             SetUiComponentLayer(combatUi.ActionTitle, useUiLayer);
@@ -934,7 +1196,14 @@ namespace MonsterSanctuaryAspectRatioFix
             SetUiComponentLayer(combatUi.TurnTitle, useUiLayer);
             SetUiComponentLayer(combatUi.ItemMenu, useUiLayer);
             SetUiComponentLayer(combatUi.LevelSelect, useUiLayer);
-            SetUiComponentLayer(combatUi.ItemTooltip, useUiLayer);
+            if (useUiLayer)
+            {
+                AssignTooltipComponent(combatUi.ItemTooltip);
+            }
+            else
+            {
+                SetUiComponentLayer(combatUi.ItemTooltip, false);
+            }
             SetUiComponentLayer(combatUi.ComboMessage, useUiLayer);
             SetUiComponentLayer(combatUi.StartMenu, useUiLayer);
             SetUiComponentLayer(combatUi.AllSelectionProxy, useUiLayer);
@@ -944,6 +1213,10 @@ namespace MonsterSanctuaryAspectRatioFix
             SetUiComponentLayer(combatUi.ImitateInfo, useUiLayer);
             SetUiComponentLayer(combatUi.BuffInfoMenu, useUiLayer);
             SetCombatMenuListRoots(combatUi, useUiLayer);
+            if (useUiLayer)
+            {
+                RestoreBuffInfoIconHierarchy(combatUi.BuffInfoMenu);
+            }
         }
 
         private void OnCombatStarted(CombatUIController combatUi)
@@ -967,7 +1240,9 @@ namespace MonsterSanctuaryAspectRatioFix
             SetCombatUiHierarchy(combatUi, true);
             ExcludeUiLayerFromOtherCameras();
             UpdateUiCameraTransform();
+            UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
+            UpdateTooltipQuadLayout();
             combatInitializationCoroutine = StartCoroutine(InitializeCombatPresentation(combatUi));
         }
 
@@ -1000,7 +1275,9 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 ExcludeUiLayerFromOtherCameras();
                 UpdateUiCameraTransform();
+                UpdateTooltipCameraTransform();
                 UpdateUiQuadLayout();
+                UpdateTooltipQuadLayout();
             }
             combatInitializationCoroutine = null;
         }
@@ -1012,6 +1289,13 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(combatInitializationCoroutine);
                 combatInitializationCoroutine = null;
             }
+            if (combatBuffInfoLayoutCoroutine != null)
+            {
+                StopCoroutine(combatBuffInfoLayoutCoroutine);
+                combatBuffInfoLayoutCoroutine = null;
+            }
+            suppressTooltipCompositeForCombatBuffInfo = false;
+            ApplyTooltipCompositeVisibility();
             SetCombatUiHierarchy(combatUi, false);
             activeCombatUi = null;
         }
@@ -1028,7 +1312,151 @@ namespace MonsterSanctuaryAspectRatioFix
             SetMenuListGraph(combatUi.LevelSelect?.MenuList, visited, useUiLayer);
             SetMenuListGraph(combatUi.StartMenu?.Menu, visited, useUiLayer);
             SetMenuListGraph(combatUi.StartMenu?.MonsterMenu, visited, useUiLayer);
-            SetMenuListGraph(combatUi.BuffInfoMenu?.MenuList, visited, useUiLayer);
+        }
+
+        private void RestoreBuffInfoIconHierarchy(BuffInfoMenu buffInfoMenu)
+        {
+            if (buffInfoMenu?.MenuList == null)
+            {
+                return;
+            }
+            /*
+             * BuffInfoMenu positions its icon list from the combat health
+             * bars' world positions. Keep that MenuList, its selection
+             * view, and its generated icon items on their original combat
+             * layers while the descriptive BuffInfo panel remains in the
+             * centered menu presentation.
+             */
+            SetMenuListGraph(buffInfoMenu.MenuList, new HashSet<int>(), false);
+            /*
+             * Some scene hierarchies place the descriptive BuffInfo panel
+             * beneath the MenuList root. Re-apply the UI layer afterward so
+             * only the health-bar-aligned icons return to world presentation.
+             */
+            SetUiComponentLayer(buffInfoMenu.BuffInfo, true);
+        }
+
+        private void OnCombatBuffInfoOpened(BuffInfoMenu buffInfoMenu)
+        {
+            if (!CropActive || buffInfoMenu == null)
+            {
+                return;
+            }
+            /*
+             * The normal combat skill/item tooltip remains logically open
+             * while Buff Info is displayed. Hide only its presentation quad
+             * so it cannot cover the gray BuffInfo panel, then restore it
+             * unchanged when Buff Info closes.
+             */
+            suppressTooltipCompositeForCombatBuffInfo = true;
+            ApplyTooltipCompositeVisibility();
+            RestoreBuffInfoIconHierarchy(buffInfoMenu);
+            ScheduleCombatBuffInfoLayout(buffInfoMenu);
+        }
+
+        private void OnCombatBuffInfoHovered(BuffInfoMenu buffInfoMenu)
+        {
+            if (!CropActive || buffInfoMenu == null || !buffInfoMenu.IsOpen)
+            {
+                return;
+            }
+            RestoreBuffInfoIconHierarchy(buffInfoMenu);
+            ScheduleCombatBuffInfoLayout(buffInfoMenu);
+        }
+
+        private void OnCombatBuffInfoClosed()
+        {
+            if (combatBuffInfoLayoutCoroutine != null)
+            {
+                StopCoroutine(combatBuffInfoLayoutCoroutine);
+                combatBuffInfoLayoutCoroutine = null;
+            }
+            suppressTooltipCompositeForCombatBuffInfo = false;
+            ApplyTooltipCompositeVisibility();
+        }
+
+        private void ApplyTooltipCompositeVisibility()
+        {
+            if (tooltipQuadRenderer != null)
+            {
+                tooltipQuadRenderer.enabled = !suppressTooltipCompositeForCombatBuffInfo;
+            }
+        }
+
+        private void ScheduleCombatBuffInfoLayout(BuffInfoMenu buffInfoMenu)
+        {
+            if (combatBuffInfoLayoutCoroutine != null)
+            {
+                StopCoroutine(combatBuffInfoLayoutCoroutine);
+            }
+            combatBuffInfoLayoutCoroutine = StartCoroutine(AdjustCombatBuffInfoAfterLayout(buffInfoMenu));
+        }
+
+        private IEnumerator AdjustCombatBuffInfoAfterLayout(BuffInfoMenu buffInfoMenu)
+        {
+            yield return null;
+            yield return new WaitForEndOfFrame();
+            combatBuffInfoLayoutCoroutine = null;
+            KeepCombatBuffInfoInsideUiFrame(buffInfoMenu);
+        }
+
+        private void KeepCombatBuffInfoInsideUiFrame(BuffInfoMenu buffInfoMenu)
+        {
+            if (!CropActive || buffInfoMenu == null || !buffInfoMenu.IsOpen ||
+                buffInfoMenu.BuffInfo == null || uiRenderCamera == null)
+            {
+                return;
+            }
+            BuffInfo buffInfo = buffInfoMenu.BuffInfo;
+            SetUiComponentLayer(buffInfo, true);
+            Renderer[] renderers = buffInfo.GetComponentsInChildren<Renderer>(true);
+            bool boundsFound = false;
+            Bounds bounds = new Bounds();
+            foreach (Renderer renderer in renderers)
+            {
+                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+                if (!boundsFound)
+                {
+                    bounds = renderer.bounds;
+                    boundsFound = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(renderer.bounds);
+                }
+            }
+            if (!boundsFound)
+            {
+                return;
+            }
+            Vector3[] corners = new Vector3[8]
+            {
+                new Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+                new Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+                new Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+                new Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+                new Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+                new Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+                new Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+                new Vector3(bounds.max.x, bounds.max.y, bounds.max.z)
+            };
+            float minimumViewportY = float.PositiveInfinity;
+            foreach (Vector3 corner in corners)
+            {
+                minimumViewportY = Mathf.Min(minimumViewportY, uiRenderCamera.WorldToViewportPoint(corner).y);
+            }
+            const float BottomMarginPixels = 3f;
+            float targetViewportY = BottomMarginPixels / OriginalHeight;
+            if (minimumViewportY >= targetViewportY)
+            {
+                return;
+            }
+            float verticalWorldSpan = uiRenderCamera.orthographicSize * 2f;
+            float shift = (targetViewportY - minimumViewportY) * verticalWorldSpan;
+            buffInfo.transform.position += uiRenderCamera.transform.up * shift;
         }
 
         private void SetMenuListGraph(MenuList menuList, HashSet<int> visited, bool useUiLayer)
@@ -1075,6 +1503,12 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             if (!CropActive || activeCombatUi == null || menuList == null)
             {
+                return;
+            }
+            if (activeCombatUi.BuffInfoMenu != null && menuList == activeCombatUi.BuffInfoMenu.MenuList)
+            {
+                RestoreBuffInfoIconHierarchy(activeCombatUi.BuffInfoMenu);
+                ExcludeUiLayerFromOtherCameras();
                 return;
             }
             /*
@@ -1285,9 +1719,37 @@ namespace MonsterSanctuaryAspectRatioFix
             SetUiComponentLayer(component, true);
         }
 
+        private void AssignTooltipComponent(Component component)
+        {
+            if (component == null)
+            {
+                return;
+            }
+            if (TooltipCompositeActive && tooltipLayer >= 0)
+            {
+                SetLayerRecursively(component.gameObject, tooltipLayer);
+            }
+            else
+            {
+                SetUiComponentLayer(component, true);
+            }
+        }
+
         private void SetLayerRecursively(GameObject root, bool useUiLayer)
         {
-            if (root == null || (useUiLayer && uiLayer < 0))
+            if (useUiLayer)
+            {
+                SetLayerRecursively(root, uiLayer);
+            }
+            else
+            {
+                RestoreOriginalLayersRecursively(root);
+            }
+        }
+
+        private void SetLayerRecursively(GameObject root, int targetLayer)
+        {
+            if (root == null || targetLayer < 0)
             {
                 return;
             }
@@ -1298,22 +1760,11 @@ namespace MonsterSanctuaryAspectRatioFix
                     continue;
                 }
                 GameObject gameObject = child.gameObject;
-                if (useUiLayer)
+                if (!originalLayers.ContainsKey(gameObject))
                 {
-                    if (!originalLayers.ContainsKey(gameObject))
-                    {
-                        originalLayers.Add(gameObject, gameObject.layer);
-                    }
-                    gameObject.layer = uiLayer;
+                    originalLayers.Add(gameObject, gameObject.layer);
                 }
-                else
-                {
-                    int originalLayer;
-                    if (originalLayers.TryGetValue(gameObject, out originalLayer))
-                    {
-                        gameObject.layer = originalLayer;
-                    }
-                }
+                gameObject.layer = targetLayer;
             }
         }
 
@@ -1324,7 +1775,22 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void RestoreOriginalLayersRecursively(GameObject root)
         {
-            SetLayerRecursively(root, false);
+            if (root == null)
+            {
+                return;
+            }
+            foreach (Transform child in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (child == null)
+                {
+                    continue;
+                }
+                int originalLayer;
+                if (originalLayers.TryGetValue(child.gameObject, out originalLayer))
+                {
+                    child.gameObject.layer = originalLayer;
+                }
+            }
         }
 
         private void RestoreAllOriginalLayers()
@@ -1346,6 +1812,8 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
             int uiMask = 1 << uiLayer;
+            int tooltipMask = TooltipCompositeActive && tooltipLayer >= 0 ? 1 << tooltipLayer : 0;
+            int compositeMask = uiMask | tooltipMask;
             Camera[] cameras = Resources.FindObjectsOfTypeAll<Camera>();
             foreach (Camera camera in cameras)
             {
@@ -1358,11 +1826,16 @@ namespace MonsterSanctuaryAspectRatioFix
                     camera.cullingMask = uiMask;
                     continue;
                 }
+                if (camera == tooltipRenderCamera)
+                {
+                    camera.cullingMask = tooltipMask;
+                    continue;
+                }
                 if (!originalCameraMasks.ContainsKey(camera))
                 {
                     originalCameraMasks.Add(camera, camera.cullingMask);
                 }
-                camera.cullingMask &= ~uiMask;
+                camera.cullingMask &= ~compositeMask;
             }
         }
 
@@ -1594,6 +2067,97 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix()
             {
                 Instance?.ScheduleSkipPromptAnchor(UIController.Instance);
+            }
+        }
+
+
+        [HarmonyPatch(typeof(ItemTooltip), nameof(ItemTooltip.Open), new System.Type[] { typeof(BaseItem), typeof(int) })]
+        private static class ItemTooltipOpenLayerPatch
+        {
+
+            private static void Postfix(ItemTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(ItemTooltip), nameof(ItemTooltip.OpenText))]
+        private static class ItemTooltipOpenTextLayerPatch
+        {
+
+            private static void Postfix(ItemTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(SkillTooltip), nameof(SkillTooltip.Open))]
+        private static class SkillTooltipOpenLayerPatch
+        {
+
+            private static void Postfix(SkillTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(FollowerTooltip), nameof(FollowerTooltip.Open))]
+        private static class FollowerTooltipOpenLayerPatch
+        {
+
+            private static void Postfix(FollowerTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterTeamTooltip), nameof(MonsterTeamTooltip.Open))]
+        private static class MonsterTeamTooltipOpenLayerPatch
+        {
+
+            private static void Postfix(MonsterTeamTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(LeaderboardTooltip), nameof(LeaderboardTooltip.Open))]
+        private static class LeaderboardTooltipOpenLayerPatch
+        {
+
+            private static void Postfix(LeaderboardTooltip __instance)
+            {
+                Instance?.OnTooltipOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(BuffInfoMenu), nameof(BuffInfoMenu.Open))]
+        private static class CombatBuffInfoOpenPresentationPatch
+        {
+
+            private static void Postfix(BuffInfoMenu __instance)
+            {
+                Instance?.OnCombatBuffInfoOpened(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(BuffInfoMenu), nameof(BuffInfoMenu.OnItemHovered))]
+        private static class CombatBuffInfoHoverPresentationPatch
+        {
+
+            private static void Postfix(BuffInfoMenu __instance)
+            {
+                Instance?.OnCombatBuffInfoHovered(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(BuffInfoMenu), nameof(BuffInfoMenu.Close))]
+        private static class CombatBuffInfoClosePresentationPatch
+        {
+
+            private static void Postfix()
+            {
+                Instance?.OnCombatBuffInfoClosed();
             }
         }
 
