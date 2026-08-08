@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.16")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.17")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -56,9 +56,18 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject tooltipQuadObject;
         private MeshRenderer tooltipQuadRenderer;
         private Material tooltipQuadMaterial;
-        private ShadeLayer resizedShadeLayer;
-        private Vector2 originalShadeDimensions;
-        private bool originalShadeDimensionsCaptured;
+        private GameObject topShadeBandObject;
+        private GameObject bottomShadeBandObject;
+        private tk2dTiledSprite topShadeBandSprite;
+        private tk2dTiledSprite bottomShadeBandSprite;
+        private int combatForegroundLayer = -1;
+        private GameObject combatForegroundCameraObject;
+        private Camera combatForegroundRenderCamera;
+        private tk2dCamera combatForegroundRenderTkCamera;
+        private RenderTexture combatForegroundRenderTexture;
+        private GameObject combatForegroundQuadObject;
+        private MeshRenderer combatForegroundQuadRenderer;
+        private Material combatForegroundQuadMaterial;
         private readonly Dictionary<GameObject, int> originalLayers = new Dictionary<GameObject, int>();
         private readonly Dictionary<Camera, int> originalCameraMasks = new Dictionary<Camera, int>();
         private readonly Dictionary<Transform, float> originalHudLocalX = new Dictionary<Transform, float>();
@@ -128,7 +137,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.16 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.17 4:3 and 16:10 camera-policy plugin loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -145,7 +154,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(sceneRegistrationCoroutine);
                 sceneRegistrationCoroutine = null;
             }
-            RestoreShadeDimensions();
+            DestroyShadeBands();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -181,7 +190,8 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
             UpdateTooltipQuadLayout();
-            ResizeShadeToVisibleView();
+            UpdateShadeBandCoverage();
+            UpdateCombatForegroundPresentation();
         }
 
         private void ScheduleApply()
@@ -336,7 +346,7 @@ namespace MonsterSanctuaryAspectRatioFix
             TooltipCompositeActive = false;
             UiInputActive = false;
             SetCombatBuffInfoCompositePriority(false);
-            RestoreShadeDimensions();
+            DestroyShadeBands();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -363,6 +373,14 @@ namespace MonsterSanctuaryAspectRatioFix
             if (tooltipQuadRenderer != null)
             {
                 tooltipQuadRenderer.enabled = false;
+            }
+            if (combatForegroundRenderCamera != null)
+            {
+                combatForegroundRenderCamera.enabled = false;
+            }
+            if (combatForegroundQuadRenderer != null)
+            {
+                combatForegroundQuadRenderer.enabled = false;
             }
             Logger.LogInfo($"Aspect Ratio Fix skipped at " + $"{Screen.width}x{Screen.height}.");
         }
@@ -406,6 +424,15 @@ namespace MonsterSanctuaryAspectRatioFix
                         "for bottom-anchored tooltips.");
                 }
             }
+            if (combatForegroundLayer < 0)
+            {
+                combatForegroundLayer = FindUnusedLayer(uiLayer, tooltipLayer);
+                if (combatForegroundLayer < 0)
+                {
+                    Logger.LogError("Aspect Ratio Fix could not find a third unused Unity layer " +
+                        "for combat Buff Info foreground icons.");
+                }
+            }
             if (uiRenderTexture == null)
             {
                 uiRenderTexture = new RenderTexture(OriginalWidth, OriginalHeight, 24, RenderTextureFormat.ARGB32);
@@ -444,6 +471,14 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 CreateTooltipQuad();
             }
+            if (combatForegroundLayer >= 0 && combatForegroundCameraObject == null)
+            {
+                CreateCombatForegroundCamera();
+            }
+            if (combatForegroundLayer >= 0 && combatForegroundQuadObject == null)
+            {
+                CreateCombatForegroundQuad();
+            }
             if (uiRenderCamera != null)
             {
                 uiRenderCamera.enabled = true;
@@ -456,6 +491,10 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 tooltipRenderCamera.enabled = true;
             }
+            if (combatForegroundRenderCamera != null)
+            {
+                combatForegroundRenderCamera.enabled = true;
+            }
             if (tooltipQuadRenderer != null)
             {
                 tooltipQuadRenderer.enabled = !suppressTooltipCompositeForCombatBuffInfo;
@@ -464,7 +503,7 @@ namespace MonsterSanctuaryAspectRatioFix
             TooltipCompositeActive = tooltipRenderCamera != null && tooltipQuadRenderer != null;
         }
 
-        private int FindUnusedLayer(int excludedLayer = -1)
+        private int FindUnusedLayer(int excludedLayer = -1, int secondExcludedLayer = -1)
         {
             bool[] usedLayers = new bool[32];
             GameObject[] objects = Resources.FindObjectsOfTypeAll<GameObject>();
@@ -477,13 +516,14 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             for (int layer = 30; layer >= 8; layer--)
             {
-                if (layer != excludedLayer && !usedLayers[layer] && string.IsNullOrEmpty(LayerMask.LayerToName(layer)))
+                if (layer != excludedLayer && layer != secondExcludedLayer && !usedLayers[layer] &&
+                    string.IsNullOrEmpty(LayerMask.LayerToName(layer)))
                 {
                     return layer;
                 }
             }
             // Layer 30 is the least likely remaining layer to be used.
-            if (excludedLayer != 30 && !usedLayers[30])
+            if (excludedLayer != 30 && secondExcludedLayer != 30 && !usedLayers[30])
             {
                 return 30;
             }
@@ -634,14 +674,114 @@ namespace MonsterSanctuaryAspectRatioFix
             SetHorizontalUvRange(tooltipQuadRenderer, 0f, 1f);
         }
 
+        private void CreateCombatForegroundCamera()
+        {
+            combatForegroundRenderTexture = new RenderTexture(OriginalWidth, OriginalHeight, 24,
+                RenderTextureFormat.ARGB32);
+            combatForegroundRenderTexture.name = "AspectRatioFix_CombatForeground_480x270";
+            combatForegroundRenderTexture.filterMode = FilterMode.Point;
+            combatForegroundRenderTexture.wrapMode = TextureWrapMode.Clamp;
+            combatForegroundRenderTexture.useMipMap = false;
+            combatForegroundRenderTexture.autoGenerateMips = false;
+            combatForegroundRenderTexture.antiAliasing = 1;
+            combatForegroundRenderTexture.Create();
+
+            combatForegroundCameraObject = new GameObject("AspectRatioFix Combat Buff Info Camera");
+            combatForegroundCameraObject.SetActive(false);
+            combatForegroundCameraObject.transform.SetParent(primaryCamera.transform, false);
+            combatForegroundRenderCamera = combatForegroundCameraObject.AddComponent<Camera>();
+            combatForegroundRenderCamera.CopyFrom(primaryCamera);
+            combatForegroundRenderCamera.cullingMask = 1 << combatForegroundLayer;
+            combatForegroundRenderCamera.clearFlags = CameraClearFlags.SolidColor;
+            combatForegroundRenderCamera.backgroundColor = Color.clear;
+            combatForegroundRenderCamera.targetTexture = combatForegroundRenderTexture;
+            combatForegroundRenderCamera.rect = new Rect(0f, 0f, 1f, 1f);
+            combatForegroundRenderCamera.depth = primaryCamera.depth + 12f;
+            combatForegroundRenderCamera.allowHDR = false;
+            combatForegroundRenderCamera.allowMSAA = false;
+            combatForegroundRenderTkCamera = combatForegroundCameraObject.AddComponent<tk2dCamera>();
+            combatForegroundRenderTkCamera.InheritConfig = primaryTkCamera;
+            combatForegroundRenderTkCamera.nativeResolutionWidth = OriginalWidth;
+            combatForegroundRenderTkCamera.nativeResolutionHeight = OriginalHeight;
+            combatForegroundCameraObject.SetActive(true);
+            combatForegroundRenderTkCamera.UpdateCameraMatrix();
+        }
+
+        private void CreateCombatForegroundQuad()
+        {
+            combatForegroundQuadObject = UnityEngine.Object.Instantiate(finalWorldQuad.gameObject);
+            combatForegroundQuadObject.name = "AspectRatioFix Combat Buff Info Composite Quad";
+            combatForegroundQuadObject.transform.SetParent(finalWorldQuad.transform.parent, false);
+            combatForegroundQuadObject.layer = finalWorldQuad.gameObject.layer;
+            combatForegroundQuadRenderer = combatForegroundQuadObject.GetComponent<MeshRenderer>();
+            if (combatForegroundQuadRenderer == null)
+            {
+                UnityEngine.Object.Destroy(combatForegroundQuadObject);
+                combatForegroundQuadObject = null;
+                return;
+            }
+            Shader shader = Shader.Find("Unlit/Transparent") ?? Shader.Find("Sprites/Default");
+            combatForegroundQuadMaterial = shader != null
+                ? new Material(shader)
+                : new Material(finalWorldQuad.sharedMaterial);
+            combatForegroundQuadMaterial.name = "AspectRatioFix Combat Buff Info Composite Material";
+            combatForegroundQuadMaterial.mainTexture = combatForegroundRenderTexture;
+            combatForegroundQuadMaterial.color = Color.white;
+            combatForegroundQuadMaterial.renderQueue = 4002;
+            combatForegroundQuadRenderer.sharedMaterial = combatForegroundQuadMaterial;
+            combatForegroundQuadRenderer.sortingOrder = 32767;
+            combatForegroundQuadRenderer.enabled = false;
+            UpdateCombatForegroundPresentation();
+        }
+
+        private void UpdateCombatForegroundPresentation()
+        {
+            if (combatForegroundCameraObject != null && primaryCamera != null)
+            {
+                combatForegroundCameraObject.transform.localPosition = Vector3.zero;
+                combatForegroundCameraObject.transform.localRotation = Quaternion.identity;
+                combatForegroundRenderCamera.nearClipPlane = primaryCamera.nearClipPlane;
+                combatForegroundRenderCamera.farClipPlane = primaryCamera.farClipPlane;
+                combatForegroundRenderTkCamera?.UpdateCameraMatrix();
+            }
+            if (combatForegroundQuadObject != null && finalWorldQuad != null && finalTkCamera != null)
+            {
+                combatForegroundQuadObject.transform.localScale = finalWorldQuad.transform.localScale;
+                Vector3 center = finalWorldQuad.bounds.center;
+                center -= finalTkCamera.transform.forward * 0.03f;
+                combatForegroundQuadObject.transform.position = center;
+            }
+        }
+
         private void DestroyUiPipeline()
         {
-            RestoreShadeDimensions();
+            DestroyShadeBands();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
             UiLayerIndex = -1;
             TooltipLayerIndex = -1;
+            if (combatForegroundQuadObject != null)
+            {
+                UnityEngine.Object.Destroy(combatForegroundQuadObject);
+                combatForegroundQuadObject = null;
+            }
+            if (combatForegroundCameraObject != null)
+            {
+                UnityEngine.Object.Destroy(combatForegroundCameraObject);
+                combatForegroundCameraObject = null;
+            }
+            if (combatForegroundQuadMaterial != null)
+            {
+                UnityEngine.Object.Destroy(combatForegroundQuadMaterial);
+                combatForegroundQuadMaterial = null;
+            }
+            if (combatForegroundRenderTexture != null)
+            {
+                combatForegroundRenderTexture.Release();
+                UnityEngine.Object.Destroy(combatForegroundRenderTexture);
+                combatForegroundRenderTexture = null;
+            }
             if (tooltipQuadObject != null)
             {
                 UnityEngine.Object.Destroy(tooltipQuadObject);
@@ -691,6 +831,10 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderTkCamera = null;
             uiInputCamera = null;
             uiQuadRenderer = null;
+            combatForegroundRenderCamera = null;
+            combatForegroundRenderTkCamera = null;
+            combatForegroundQuadRenderer = null;
+            combatForegroundLayer = -1;
         }
 
         private void UpdateUiCameraTransform()
@@ -1019,42 +1163,104 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipQuadLayout();
         }
 
-        private void ResizeShadeToVisibleView()
+        private void EnsureShadeBands()
+        {
+            if (!CropActive || topShadeBandObject != null)
+            {
+                return;
+            }
+            UIController controller = UIController.Instance;
+            ShadeLayer shade = controller != null ? controller.ShadeLayer : null;
+            if (shade == null || shade.layer == null)
+            {
+                return;
+            }
+            int sourceLayer;
+            if (!originalLayers.TryGetValue(shade.layer.gameObject, out sourceLayer))
+            {
+                sourceLayer = primaryCamera != null ? primaryCamera.gameObject.layer : 0;
+            }
+            topShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
+            bottomShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
+            topShadeBandObject.name = "AspectRatioFix Top Shade Band";
+            bottomShadeBandObject.name = "AspectRatioFix Bottom Shade Band";
+            topShadeBandSprite = topShadeBandObject.GetComponent<tk2dTiledSprite>();
+            bottomShadeBandSprite = bottomShadeBandObject.GetComponent<tk2dTiledSprite>();
+            foreach (ColorTween tween in topShadeBandObject.GetComponents<ColorTween>())
+            {
+                tween.enabled = false;
+            }
+            foreach (ColorTween tween in bottomShadeBandObject.GetComponents<ColorTween>())
+            {
+                tween.enabled = false;
+            }
+            SetLayerRecursively(topShadeBandObject, sourceLayer);
+            SetLayerRecursively(bottomShadeBandObject, sourceLayer);
+            topShadeBandObject.SetActive(false);
+            bottomShadeBandObject.SetActive(false);
+        }
+
+        private void UpdateShadeBandCoverage()
         {
             if (!CropActive)
             {
                 return;
             }
-            UIController uiController = UIController.Instance;
-            ShadeLayer shade = uiController != null ? uiController.ShadeLayer : null;
-            if (shade == null || shade.layer == null)
+            EnsureShadeBands();
+            UIController controller = UIController.Instance;
+            ShadeLayer shade = controller != null ? controller.ShadeLayer : null;
+            if (shade == null || shade.layer == null || topShadeBandSprite == null ||
+                bottomShadeBandSprite == null || primaryCamera == null)
             {
                 return;
             }
-            if (!originalShadeDimensionsCaptured || resizedShadeLayer != shade)
+            float uiLogicalHeight = VisibleWorldWidth / UiAspect;
+            float bandHeight = Mathf.Max(0f, (OriginalHeight - uiLogicalHeight) * 0.5f);
+            bool visible = bandHeight > 0.01f && shade.layer.color.a > 0.001f;
+            topShadeBandObject.SetActive(visible);
+            bottomShadeBandObject.SetActive(visible);
+            if (!visible)
             {
-                resizedShadeLayer = shade;
-                originalShadeDimensions = shade.layer.dimensions;
-                originalShadeDimensionsCaptured = true;
+                return;
             }
+            topShadeBandSprite.color = shade.layer.color;
+            bottomShadeBandSprite.color = shade.layer.color;
+            topShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, bandHeight);
+            bottomShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, bandHeight);
 
-            // Resize the game's one shade instead of drawing overlapping copies.
-            // The UI camera remains centered on the authored view, so equal excess
-            // above and below preserves the shade's original center and Z ordering.
-            float fullLogicalHeight = OriginalWidth / TargetAspect;
-            shade.layer.dimensions = new Vector2(
-                Mathf.Max(originalShadeDimensions.x, OriginalWidth),
-                Mathf.Max(originalShadeDimensions.y, fullLogicalHeight));
+            Vector3 shadeCenter = shade.layer.GetComponent<Renderer>().bounds.center;
+            Vector3 offset = primaryCamera.transform.up * ((uiLogicalHeight + bandHeight) * 0.5f);
+            PositionSpriteBoundsCenter(topShadeBandSprite, shadeCenter + offset);
+            PositionSpriteBoundsCenter(bottomShadeBandSprite, shadeCenter - offset);
+            topShadeBandObject.transform.position = Utils.VectorChangeZ(topShadeBandObject.transform.position,
+                shade.transform.position.z);
+            bottomShadeBandObject.transform.position = Utils.VectorChangeZ(bottomShadeBandObject.transform.position,
+                shade.transform.position.z);
         }
 
-        private void RestoreShadeDimensions()
+        private static void PositionSpriteBoundsCenter(tk2dTiledSprite sprite, Vector3 targetCenter)
         {
-            if (resizedShadeLayer != null && resizedShadeLayer.layer != null && originalShadeDimensionsCaptured)
+            Renderer renderer = sprite != null ? sprite.GetComponent<Renderer>() : null;
+            if (renderer != null)
             {
-                resizedShadeLayer.layer.dimensions = originalShadeDimensions;
+                sprite.transform.position += targetCenter - renderer.bounds.center;
             }
-            resizedShadeLayer = null;
-            originalShadeDimensionsCaptured = false;
+        }
+
+        private void DestroyShadeBands()
+        {
+            if (topShadeBandObject != null)
+            {
+                UnityEngine.Object.Destroy(topShadeBandObject);
+            }
+            if (bottomShadeBandObject != null)
+            {
+                UnityEngine.Object.Destroy(bottomShadeBandObject);
+            }
+            topShadeBandObject = null;
+            bottomShadeBandObject = null;
+            topShadeBandSprite = null;
+            bottomShadeBandSprite = null;
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -1763,7 +1969,7 @@ namespace MonsterSanctuaryAspectRatioFix
             SetCombatMenuListRoots(combatUi, useUiLayer);
             if (useUiLayer)
             {
-                RestoreBuffInfoIconHierarchy(combatUi.BuffInfoMenu);
+                SetBuffInfoIconForeground(combatUi.BuffInfoMenu, combatUi.BuffInfoMenu.IsOpen);
             }
         }
 
@@ -1927,6 +2133,33 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             ExcludeUiLayerFromOtherCameras();
         }
+
+        private void FadeActiveTitlesWithSceneOverlay(Color overlayColor, float duration, float delay)
+        {
+            if (!CropActive || overlayColor.a <= 0f)
+            {
+                return;
+            }
+            foreach (TitleAnimation titleAnimation in Resources.FindObjectsOfTypeAll<TitleAnimation>())
+            {
+                if (titleAnimation == null || !titleAnimation.gameObject.activeInHierarchy ||
+                    titleAnimation.TitleInstances == null)
+                {
+                    continue;
+                }
+                foreach (tk2dSprite title in titleAnimation.TitleInstances)
+                {
+                    if (title == null || !title.gameObject.activeInHierarchy)
+                    {
+                        continue;
+                    }
+                    Color current = title.color;
+                    Color target = new Color(current.r, current.g, current.b, 0f);
+                    ColorTween.StartTween(title.gameObject, current, target, duration,
+                        ColorTween.Type.Linear, delay);
+                }
+            }
+        }
         private void RestoreVictoryBannerLayout(VictoryScreen victoryScreen)
         {
             if (victoryScreen == null)
@@ -1966,7 +2199,7 @@ namespace MonsterSanctuaryAspectRatioFix
             SetMenuListGraph(combatUi.StartMenu?.MonsterMenu, visited, useUiLayer);
         }
 
-        private void RestoreBuffInfoIconHierarchy(BuffInfoMenu buffInfoMenu)
+        private void SetBuffInfoIconForeground(BuffInfoMenu buffInfoMenu, bool foreground)
         {
             if (buffInfoMenu?.MenuList == null)
             {
@@ -1974,17 +2207,31 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             /*
              * BuffInfoMenu continually positions its icon list from the combat
-             * health bars' world positions. Keep that list and its selector in
-             * the health bars' original camera space so 4:3/16:10 cropping does
-             * not change their apparent offset or scale.
+             * health bars' world positions. The foreground camera uses the same
+             * 480x270 mapping and cropped output quad as those health bars, so
+             * the list retains its exact position and scale while compositing
+             * above the shade and menus.
              */
             SetMenuListGraph(buffInfoMenu.MenuList, new HashSet<int>(), false);
+            if (foreground && combatForegroundLayer >= 0)
+            {
+                SetLayerRecursively(buffInfoMenu.MenuList.gameObject, combatForegroundLayer);
+                SetLayerRecursively(buffInfoMenu.MenuList.RootElement, combatForegroundLayer);
+                if (buffInfoMenu.MenuList.SelectionView != null)
+                {
+                    SetLayerRecursively(buffInfoMenu.MenuList.SelectionView.gameObject, combatForegroundLayer);
+                }
+            }
             /*
              * Some scene hierarchies place the descriptive BuffInfo panel
              * beneath the MenuList root. The description is independent of the
              * health-bar alignment and remains in the foreground UI composite.
              */
             SetUiComponentLayer(buffInfoMenu.BuffInfo, true);
+            if (combatForegroundQuadRenderer != null)
+            {
+                combatForegroundQuadRenderer.enabled = foreground;
+            }
         }
 
         private void OnCombatBuffInfoOpened(BuffInfoMenu buffInfoMenu)
@@ -1999,7 +2246,9 @@ namespace MonsterSanctuaryAspectRatioFix
              * Buff Info panel wins only where the two presentations overlap.
              */
             SetCombatBuffInfoCompositePriority(true);
-            RestoreBuffInfoIconHierarchy(buffInfoMenu);
+            SetBuffInfoIconForeground(buffInfoMenu, true);
+            UpdateCombatForegroundPresentation();
+            ExcludeUiLayerFromOtherCameras();
             ScheduleCombatBuffInfoLayout(buffInfoMenu);
         }
 
@@ -2009,7 +2258,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            RestoreBuffInfoIconHierarchy(buffInfoMenu);
+            SetBuffInfoIconForeground(buffInfoMenu, true);
             ScheduleCombatBuffInfoLayout(buffInfoMenu);
         }
 
@@ -2021,6 +2270,10 @@ namespace MonsterSanctuaryAspectRatioFix
                 combatBuffInfoLayoutCoroutine = null;
             }
             SetCombatBuffInfoCompositePriority(false);
+            if (activeCombatUi?.BuffInfoMenu != null)
+            {
+                SetBuffInfoIconForeground(activeCombatUi.BuffInfoMenu, false);
+            }
         }
 
         private void ApplyTooltipCompositeVisibility()
@@ -2301,7 +2554,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             if (activeCombatUi?.BuffInfoMenu != null && menuList == activeCombatUi.BuffInfoMenu.MenuList)
             {
-                RestoreBuffInfoIconHierarchy(activeCombatUi.BuffInfoMenu);
+                SetBuffInfoIconForeground(activeCombatUi.BuffInfoMenu, activeCombatUi.BuffInfoMenu.IsOpen);
                 RefreshUiInputState();
                 return;
             }
@@ -2475,19 +2728,19 @@ namespace MonsterSanctuaryAspectRatioFix
             if (uiController.Overlay != null)
             {
                 /*
-                 * The title logo is presented by the UI composite. Present the
-                 * game's transition overlay above that composite as well so the
-                 * logo participates in the native fade instead of remaining
-                 * visible until its scene object is destroyed.
+                 * Full-frame transitions belong to the original world camera.
+                 * Moving the overlay into the centered UI texture creates a
+                 * 16:9 black rectangle on 4:3 and 16:10 outputs.
                  */
-                AssignUiComponent(uiController.Overlay);
+                RestoreOriginalLayersRecursively(uiController.Overlay.gameObject);
             }
             if (uiController.ShadeLayer != null)
             {
-                // Preserve the native shade and its stack/Z behavior. Only its
-                // geometry is expanded; no second opacity pass is introduced.
+                // The native center shade stays inside the UI composite for its
+                // original menu-to-menu Z ordering. Separate non-overlapping
+                // band fills cover only the output outside that 16:9 composite.
                 AssignUiComponent(uiController.ShadeLayer);
-                ResizeShadeToVisibleView();
+                EnsureShadeBands();
             }
             if (uiController.Dialogue != null && uiController.Dialogue.NarrationBackground != null)
             {
@@ -2625,7 +2878,8 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             int uiMask = 1 << uiLayer;
             int tooltipMask = TooltipCompositeActive && tooltipLayer >= 0 ? 1 << tooltipLayer : 0;
-            int compositeMask = uiMask | tooltipMask;
+            int foregroundMask = combatForegroundLayer >= 0 ? 1 << combatForegroundLayer : 0;
+            int compositeMask = uiMask | tooltipMask | foregroundMask;
             Camera[] cameras = Resources.FindObjectsOfTypeAll<Camera>();
             foreach (Camera camera in cameras)
             {
@@ -2641,6 +2895,11 @@ namespace MonsterSanctuaryAspectRatioFix
                 if (camera == tooltipRenderCamera)
                 {
                     camera.cullingMask = tooltipMask;
+                    continue;
+                }
+                if (camera == combatForegroundRenderCamera)
+                {
+                    camera.cullingMask = foregroundMask;
                     continue;
                 }
                 if (!originalCameraMasks.ContainsKey(camera))
@@ -3253,7 +3512,7 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             private static void Postfix()
             {
-                Instance?.ResizeShadeToVisibleView();
+                Instance?.UpdateShadeBandCoverage();
             }
         }
 
@@ -3264,7 +3523,17 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 // Hide can reveal the preceding entry in ShadeLayer's stack;
                 // keep the shared shade expanded while that entry remains.
-                Instance?.ResizeShadeToVisibleView();
+                Instance?.UpdateShadeBandCoverage();
+            }
+        }
+
+        [HarmonyPatch(typeof(OverlayController), nameof(OverlayController.StartFadeOut))]
+        private static class SceneOverlayTitleFadePatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Color color, float duration, float delay)
+            {
+                Instance?.FadeActiveTitlesWithSceneOverlay(color, duration, delay);
             }
         }
 
