@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.23")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.24")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -72,6 +72,9 @@ namespace MonsterSanctuaryAspectRatioFix
             new Dictionary<Transform, GameObject>();
         private readonly Dictionary<Transform, int> originalMapArrowSiblingIndices =
             new Dictionary<Transform, int>();
+        private tk2dTiledSprite expandedMonsterSelectorBackground;
+        private Vector2 originalMonsterSelectorBackgroundDimensions;
+        private bool originalMonsterSelectorBackgroundDimensionsCaptured;
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -149,7 +152,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.23 map-arrow camera-anchor prototype loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.24 Monster Selector background patch loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -169,6 +172,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RestoreNativeShadeDimensions();
             RestoreMapBackgroundDimensions();
             RestoreMapScreenLayout();
+            RestoreMonsterSelectorBackgroundDimensions();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -364,6 +368,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RestoreNativeShadeDimensions();
             RestoreMapBackgroundDimensions();
             RestoreMapScreenLayout();
+            RestoreMonsterSelectorBackgroundDimensions();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -891,6 +896,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void DestroyUiPipeline()
         {
             RestoreNativeShadeDimensions();
+            RestoreMonsterSelectorBackgroundDimensions();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
@@ -1197,6 +1203,8 @@ namespace MonsterSanctuaryAspectRatioFix
                 AssignUiComponent(uiController.CostumeMenu);
                 AssignUiComponent(uiController.NewGameMenu);
                 AssignNewGameDescriptionPresentation(uiController.NewGameMenu);
+                UpdateMonsterSelectorBackgroundCoverage(
+                    uiController.IngameMenu != null ? uiController.IngameMenu.MonsterSelector : null);
                 EnsureShadePresentation();
             }
             SaveGameMenu[] saveMenus = Resources.FindObjectsOfTypeAll<SaveGameMenu>();
@@ -1350,6 +1358,59 @@ namespace MonsterSanctuaryAspectRatioFix
             expandedShadeSprite = null;
             originalShadeDimensions = Vector2.zero;
             originalShadeDimensionsCaptured = false;
+        }
+
+        private void UpdateMonsterSelectorBackgroundCoverage(MonsterSelector selector)
+        {
+            if (!CropActive || selector == null || selector.Background == null)
+            {
+                return;
+            }
+
+            tk2dTiledSprite background = selector.Background as tk2dTiledSprite;
+            if (background == null)
+            {
+                Logger.LogWarning("Aspect Ratio Fix expected the Monster Selector background to be a tiled sprite.");
+                return;
+            }
+
+            if (expandedMonsterSelectorBackground != background)
+            {
+                RestoreMonsterSelectorBackgroundDimensions();
+                expandedMonsterSelectorBackground = background;
+                originalMonsterSelectorBackgroundDimensions = background.dimensions;
+                originalMonsterSelectorBackgroundDimensionsCaptured = true;
+            }
+
+            /*
+             * The runtime diagnostic confirmed that this sprite is an
+             * unrotated, center-anchored 480x270 tiled sprite. Change only
+             * its native geometry; its parent menu animation and alpha tween
+             * remain authoritative for position and visibility.
+             */
+            Vector2 targetDimensions = new Vector2(
+                originalMonsterSelectorBackgroundDimensions.x,
+                originalMonsterSelectorBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
+            if ((background.dimensions - targetDimensions).sqrMagnitude >= 0.001f)
+            {
+                background.dimensions = targetDimensions;
+                Logger.LogInfo($"Expanded Monster Selector background from " +
+                    $"{originalMonsterSelectorBackgroundDimensions.x:0}x" +
+                    $"{originalMonsterSelectorBackgroundDimensions.y:0} to " +
+                    $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
+            }
+        }
+
+        private void RestoreMonsterSelectorBackgroundDimensions()
+        {
+            if (expandedMonsterSelectorBackground != null &&
+                originalMonsterSelectorBackgroundDimensionsCaptured)
+            {
+                expandedMonsterSelectorBackground.dimensions = originalMonsterSelectorBackgroundDimensions;
+            }
+            expandedMonsterSelectorBackground = null;
+            originalMonsterSelectorBackgroundDimensions = Vector2.zero;
+            originalMonsterSelectorBackgroundDimensionsCaptured = false;
         }
 
         private void UpdateExistingMapBackgroundCoverage()
@@ -3629,6 +3690,15 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 Instance?.UpdateMapBackgroundCoverage(__instance);
                 Instance?.ApplyMapScreenLayout(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterSelector), nameof(MonsterSelector.Open))]
+        private static class MonsterSelectorBackgroundCoveragePatch
+        {
+            private static void Postfix(MonsterSelector __instance)
+            {
+                Instance?.UpdateMonsterSelectorBackgroundCoverage(__instance);
             }
         }
 
