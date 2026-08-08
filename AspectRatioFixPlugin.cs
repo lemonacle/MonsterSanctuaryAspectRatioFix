@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.20")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.21")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -61,6 +61,9 @@ namespace MonsterSanctuaryAspectRatioFix
         private tk2dTiledSprite expandedShadeSprite;
         private Vector2 originalShadeDimensions;
         private bool originalShadeDimensionsCaptured;
+        private tk2dTiledSprite expandedMapBackgroundSprite;
+        private Vector2 originalMapBackgroundDimensions;
+        private bool originalMapBackgroundDimensionsCaptured;
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -138,7 +141,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.20 pixel-preserving expanded-UI-canvas prototype loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.21 expanded map-background prototype loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -156,6 +159,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 sceneRegistrationCoroutine = null;
             }
             RestoreNativeShadeDimensions();
+            RestoreMapBackgroundDimensions();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -349,6 +353,7 @@ namespace MonsterSanctuaryAspectRatioFix
             UiInputActive = false;
             SetCombatBuffInfoCompositePriority(false);
             RestoreNativeShadeDimensions();
+            RestoreMapBackgroundDimensions();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -1214,6 +1219,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             AssignExistingTitleAnimations();
             AssignKnownTooltipObjects();
+            UpdateExistingMapBackgroundCoverage();
         }
 
         private void AssignKnownTooltipObjects()
@@ -1334,6 +1340,112 @@ namespace MonsterSanctuaryAspectRatioFix
             expandedShadeSprite = null;
             originalShadeDimensions = Vector2.zero;
             originalShadeDimensionsCaptured = false;
+        }
+
+        private void UpdateExistingMapBackgroundCoverage()
+        {
+            if (!CropActive)
+            {
+                return;
+            }
+            foreach (MapMenu mapMenu in Resources.FindObjectsOfTypeAll<MapMenu>())
+            {
+                if (mapMenu == null || !mapMenu.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+                UpdateMapBackgroundCoverage(mapMenu);
+                if (expandedMapBackgroundSprite != null)
+                {
+                    return;
+                }
+            }
+        }
+
+        private void UpdateMapBackgroundCoverage(MapMenu mapMenu)
+        {
+            if (!CropActive || mapMenu == null)
+            {
+                return;
+            }
+            tk2dTiledSprite background = FindMapBackgroundSprite(mapMenu);
+            if (background == null)
+            {
+                Logger.LogWarning("Aspect Ratio Fix could not locate the Map screen background sprite.");
+                return;
+            }
+            if (expandedMapBackgroundSprite != background)
+            {
+                RestoreMapBackgroundDimensions();
+                expandedMapBackgroundSprite = background;
+                originalMapBackgroundDimensions = background.dimensions;
+                originalMapBackgroundDimensionsCaptured = true;
+            }
+
+            Vector2 targetDimensions = new Vector2(
+                originalMapBackgroundDimensions.x,
+                originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
+            if ((background.dimensions - targetDimensions).sqrMagnitude < 0.001f)
+            {
+                return;
+            }
+            Renderer renderer = background.GetComponent<Renderer>();
+            Vector3 originalCenter = renderer != null ? renderer.bounds.center : background.transform.position;
+            background.dimensions = targetDimensions;
+            PositionSpriteBoundsCenter(background, originalCenter);
+            Logger.LogInfo($"Expanded Map screen background from " +
+                $"{originalMapBackgroundDimensions.x:0}x{originalMapBackgroundDimensions.y:0} to " +
+                $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
+        }
+
+        private static tk2dTiledSprite FindMapBackgroundSprite(MapMenu mapMenu)
+        {
+            Transform mapContentRoot = mapMenu.Root != null ? mapMenu.Root.transform : null;
+            tk2dTiledSprite bestCandidate = null;
+            float bestArea = 0f;
+            foreach (tk2dTiledSprite sprite in mapMenu.GetComponentsInChildren<tk2dTiledSprite>(true))
+            {
+                if (sprite == null || sprite == mapMenu.PlayerDot)
+                {
+                    continue;
+                }
+                if (mapContentRoot != null &&
+                    (sprite.transform == mapContentRoot || sprite.transform.IsChildOf(mapContentRoot)))
+                {
+                    // Map tiles scroll inside this root. The fixed black
+                    // backing is outside it and must remain stationary.
+                    continue;
+                }
+                float width = Mathf.Abs(sprite.dimensions.x);
+                float height = Mathf.Abs(sprite.dimensions.y);
+                if (width < OriginalWidth * 0.75f || height < OriginalHeight * 0.75f)
+                {
+                    continue;
+                }
+                float area = width * height;
+                if (area > bestArea)
+                {
+                    bestCandidate = sprite;
+                    bestArea = area;
+                }
+            }
+            return bestCandidate;
+        }
+
+        private void RestoreMapBackgroundDimensions()
+        {
+            if (expandedMapBackgroundSprite != null && originalMapBackgroundDimensionsCaptured)
+            {
+                Renderer renderer = expandedMapBackgroundSprite.GetComponent<Renderer>();
+                Vector3 originalCenter = renderer != null
+                    ? renderer.bounds.center
+                    : expandedMapBackgroundSprite.transform.position;
+                expandedMapBackgroundSprite.dimensions = originalMapBackgroundDimensions;
+                PositionSpriteBoundsCenter(expandedMapBackgroundSprite, originalCenter);
+            }
+            expandedMapBackgroundSprite = null;
+            originalMapBackgroundDimensions = Vector2.zero;
+            originalMapBackgroundDimensionsCaptured = false;
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -3346,6 +3458,15 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix(BuffInfoOverlay __instance, BuffInfo __result)
             {
                 Instance?.RefreshBuffInfoPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(MapMenu), nameof(MapMenu.Open))]
+        private static class MapMenuBackgroundCoveragePatch
+        {
+            private static void Postfix(MapMenu __instance)
+            {
+                Instance?.UpdateMapBackgroundCoverage(__instance);
             }
         }
 
