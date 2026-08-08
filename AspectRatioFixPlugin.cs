@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.24")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.27")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -75,6 +75,9 @@ namespace MonsterSanctuaryAspectRatioFix
         private tk2dTiledSprite expandedMonsterSelectorBackground;
         private Vector2 originalMonsterSelectorBackgroundDimensions;
         private bool originalMonsterSelectorBackgroundDimensionsCaptured;
+        private tk2dBaseSprite expandedMonsterShiftBackground;
+        private Vector2 originalMonsterShiftBackgroundDimensions;
+        private bool originalMonsterShiftBackgroundDimensionsCaptured;
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -152,7 +155,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.24 Monster Selector background patch loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.27 Monster Shift background coverage patch loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -173,6 +176,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RestoreMapBackgroundDimensions();
             RestoreMapScreenLayout();
             RestoreMonsterSelectorBackgroundDimensions();
+            RestoreMonsterShiftBackgroundDimensions();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -369,6 +373,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RestoreMapBackgroundDimensions();
             RestoreMapScreenLayout();
             RestoreMonsterSelectorBackgroundDimensions();
+            RestoreMonsterShiftBackgroundDimensions();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -897,6 +902,7 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             RestoreNativeShadeDimensions();
             RestoreMonsterSelectorBackgroundDimensions();
+            RestoreMonsterShiftBackgroundDimensions();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
@@ -1382,23 +1388,55 @@ namespace MonsterSanctuaryAspectRatioFix
                 originalMonsterSelectorBackgroundDimensionsCaptured = true;
             }
 
-            /*
-             * The runtime diagnostic confirmed that this sprite is an
-             * unrotated, center-anchored 480x270 tiled sprite. Change only
-             * its native geometry; its parent menu animation and alpha tween
-             * remain authoritative for position and visibility.
+            LogMonsterSelectorBackgroundState("before coverage", selector, background);
+
+            /* Preserve the renderer's visual center while resizing. Some
+             * tk2d tiled-sprite anchor configurations grow the mesh in one
+             * direction even when the transform itself remains stationary.
+             * The parent menu animation and alpha tween stay authoritative.
              */
             Vector2 targetDimensions = new Vector2(
                 originalMonsterSelectorBackgroundDimensions.x,
                 originalMonsterSelectorBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
             if ((background.dimensions - targetDimensions).sqrMagnitude >= 0.001f)
             {
+                Renderer renderer = background.GetComponent<Renderer>();
+                Vector3 originalCenter = renderer != null
+                    ? renderer.bounds.center
+                    : background.transform.position;
                 background.dimensions = targetDimensions;
+                PositionSpriteBoundsCenter(background, originalCenter);
                 Logger.LogInfo($"Expanded Monster Selector background from " +
                     $"{originalMonsterSelectorBackgroundDimensions.x:0}x" +
                     $"{originalMonsterSelectorBackgroundDimensions.y:0} to " +
                     $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
             }
+            LogMonsterSelectorBackgroundState("after coverage", selector, background);
+        }
+
+        private void LogMonsterSelectorBackgroundState(string stage, MonsterSelector selector, tk2dTiledSprite background)
+        {
+            Renderer renderer = background != null ? background.GetComponent<Renderer>() : null;
+            string boundsText = renderer != null
+                ? $"boundsCenter={renderer.bounds.center}, boundsSize={renderer.bounds.size}"
+                : "bounds=<missing>";
+            string viewportText = "uiViewport=<missing>";
+            if (renderer != null && uiRenderCamera != null)
+            {
+                Vector3 viewportMin = uiRenderCamera.WorldToViewportPoint(renderer.bounds.min);
+                Vector3 viewportMax = uiRenderCamera.WorldToViewportPoint(renderer.bounds.max);
+                viewportText = $"uiViewportMin={viewportMin}, uiViewportMax={viewportMax}";
+            }
+            Logger.LogInfo($"Monster Selector diagnostic [{stage}]: " +
+                $"path='{GetTransformPath(background != null ? background.transform : null, selector != null ? selector.transform : null)}', " +
+                $"sameTransform={selector != null && background != null && selector.transform == background.transform}, " +
+                $"activeSelf={background != null && background.gameObject.activeSelf}, activeInHierarchy={background != null && background.gameObject.activeInHierarchy}, " +
+                $"layer={(background != null ? background.gameObject.layer : -1)}, anchor={(background != null ? background.anchor.ToString() : "<missing>")}, " +
+                $"dimensions={(background != null ? background.dimensions.ToString() : "<missing>")}, " +
+                $"localPosition={(background != null ? background.transform.localPosition.ToString() : "<missing>")}, " +
+                $"worldPosition={(background != null ? background.transform.position.ToString() : "<missing>")}, " +
+                $"lossyScale={(background != null ? background.transform.lossyScale.ToString() : "<missing>")}, " +
+                boundsText + ", " + viewportText + ".");
         }
 
         private void RestoreMonsterSelectorBackgroundDimensions()
@@ -1406,11 +1444,189 @@ namespace MonsterSanctuaryAspectRatioFix
             if (expandedMonsterSelectorBackground != null &&
                 originalMonsterSelectorBackgroundDimensionsCaptured)
             {
+                Renderer renderer = expandedMonsterSelectorBackground.GetComponent<Renderer>();
+                Vector3 originalCenter = renderer != null
+                    ? renderer.bounds.center
+                    : expandedMonsterSelectorBackground.transform.position;
                 expandedMonsterSelectorBackground.dimensions = originalMonsterSelectorBackgroundDimensions;
+                PositionSpriteBoundsCenter(expandedMonsterSelectorBackground, originalCenter);
             }
             expandedMonsterSelectorBackground = null;
             originalMonsterSelectorBackgroundDimensions = Vector2.zero;
             originalMonsterSelectorBackgroundDimensionsCaptured = false;
+        }
+
+        private void UpdateMonsterShiftBackgroundCoverage(MonsterShiftMenu shiftMenu)
+        {
+            if (!CropActive || shiftMenu == null)
+            {
+                return;
+            }
+
+            Transform openingRoot = shiftMenu.MenuList != null && shiftMenu.MenuList.RootElement != null
+                ? shiftMenu.MenuList.RootElement.transform
+                : null;
+            tk2dBaseSprite bestCandidate = null;
+            float bestArea = 0f;
+            foreach (tk2dBaseSprite sprite in shiftMenu.GetComponentsInChildren<tk2dBaseSprite>(true))
+            {
+                if (sprite == null)
+                {
+                    continue;
+                }
+                Vector2 dimensions;
+                if (!TryGetResizableSpriteDimensions(sprite, out dimensions))
+                {
+                    continue;
+                }
+                float width = Mathf.Abs(dimensions.x);
+                float height = Mathf.Abs(dimensions.y);
+                Renderer renderer = sprite.GetComponent<Renderer>();
+                bool insideOpeningRoot = openingRoot != null &&
+                    (sprite.transform == openingRoot || sprite.transform.IsChildOf(openingRoot));
+                if (width >= 100f || height >= 100f)
+                {
+                    Logger.LogInfo($"Monster Shift sprite candidate: " +
+                        $"path='{GetTransformPath(sprite.transform, shiftMenu.transform)}', " +
+                        $"type={sprite.GetType().Name}, dimensions={dimensions}, " +
+                        $"insideOpeningRoot={insideOpeningRoot}, anchor={GetResizableSpriteAnchor(sprite)}, " +
+                        $"color={sprite.color}, activeSelf={sprite.gameObject.activeSelf}, " +
+                        $"boundsSize={(renderer != null ? renderer.bounds.size.ToString() : "<missing>")}.");
+                }
+                if (width < OriginalWidth * 0.75f || height < OriginalHeight * 0.75f)
+                {
+                    continue;
+                }
+                float area = width * height;
+                if (area > bestArea)
+                {
+                    bestCandidate = sprite;
+                    bestArea = area;
+                }
+            }
+
+            if (bestCandidate == null)
+            {
+                LogMonsterShiftShadeState("no full-frame Shift child found");
+                Logger.LogWarning("Aspect Ratio Fix could not locate a resizable full-frame sprite under MonsterShiftMenu.");
+                return;
+            }
+
+            if (expandedMonsterShiftBackground != bestCandidate)
+            {
+                RestoreMonsterShiftBackgroundDimensions();
+                expandedMonsterShiftBackground = bestCandidate;
+                TryGetResizableSpriteDimensions(bestCandidate, out originalMonsterShiftBackgroundDimensions);
+                originalMonsterShiftBackgroundDimensionsCaptured = true;
+            }
+
+            Vector2 targetDimensions = new Vector2(
+                originalMonsterShiftBackgroundDimensions.x,
+                originalMonsterShiftBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
+            Vector2 currentDimensions;
+            if (!TryGetResizableSpriteDimensions(bestCandidate, out currentDimensions) ||
+                (currentDimensions - targetDimensions).sqrMagnitude < 0.001f)
+            {
+                LogMonsterShiftShadeState("Shift child already covered");
+                return;
+            }
+
+            Renderer candidateRenderer = bestCandidate.GetComponent<Renderer>();
+            Vector3 originalCenter = candidateRenderer != null
+                ? candidateRenderer.bounds.center
+                : bestCandidate.transform.position;
+            SetResizableSpriteDimensions(bestCandidate, targetDimensions);
+            PositionSpriteBoundsCenter(bestCandidate, originalCenter);
+            Logger.LogInfo($"Expanded Monster Shift background " +
+                $"'{GetTransformPath(bestCandidate.transform, shiftMenu.transform)}' " +
+                $"({bestCandidate.GetType().Name}) from " +
+                $"{originalMonsterShiftBackgroundDimensions.x:0}x" +
+                $"{originalMonsterShiftBackgroundDimensions.y:0} to " +
+                $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
+            LogMonsterShiftShadeState("after Shift child coverage");
+        }
+
+        private static bool TryGetResizableSpriteDimensions(tk2dBaseSprite sprite, out Vector2 dimensions)
+        {
+            tk2dTiledSprite tiled = sprite as tk2dTiledSprite;
+            if (tiled != null)
+            {
+                dimensions = tiled.dimensions;
+                return true;
+            }
+            tk2dSlicedSprite sliced = sprite as tk2dSlicedSprite;
+            if (sliced != null)
+            {
+                dimensions = sliced.dimensions;
+                return true;
+            }
+            dimensions = Vector2.zero;
+            return false;
+        }
+
+        private static string GetResizableSpriteAnchor(tk2dBaseSprite sprite)
+        {
+            tk2dTiledSprite tiled = sprite as tk2dTiledSprite;
+            if (tiled != null)
+            {
+                return tiled.anchor.ToString();
+            }
+            tk2dSlicedSprite sliced = sprite as tk2dSlicedSprite;
+            return sliced != null ? sliced.anchor.ToString() : "<not resizable>";
+        }
+
+        private static void SetResizableSpriteDimensions(tk2dBaseSprite sprite, Vector2 dimensions)
+        {
+            tk2dTiledSprite tiled = sprite as tk2dTiledSprite;
+            if (tiled != null)
+            {
+                tiled.dimensions = dimensions;
+                return;
+            }
+            tk2dSlicedSprite sliced = sprite as tk2dSlicedSprite;
+            if (sliced != null)
+            {
+                sliced.dimensions = dimensions;
+            }
+        }
+
+        private static void PositionSpriteBoundsCenter(tk2dBaseSprite sprite, Vector3 targetCenter)
+        {
+            Renderer renderer = sprite != null ? sprite.GetComponent<Renderer>() : null;
+            if (renderer != null)
+            {
+                sprite.transform.position += targetCenter - renderer.bounds.center;
+            }
+        }
+
+        private void LogMonsterShiftShadeState(string stage)
+        {
+            UIController controller = UIController.Instance;
+            tk2dTiledSprite shade = controller != null && controller.ShadeLayer != null
+                ? controller.ShadeLayer.layer
+                : null;
+            Renderer renderer = shade != null ? shade.GetComponent<Renderer>() : null;
+            Logger.LogInfo($"Monster Shift shade diagnostic [{stage}]: " +
+                $"dimensions={(shade != null ? shade.dimensions.ToString() : "<missing>")}, " +
+                $"anchor={(shade != null ? shade.anchor.ToString() : "<missing>")}, " +
+                $"color={(shade != null ? shade.color.ToString() : "<missing>")}, " +
+                $"boundsSize={(renderer != null ? renderer.bounds.size.ToString() : "<missing>")}.");
+        }
+
+        private void RestoreMonsterShiftBackgroundDimensions()
+        {
+            if (expandedMonsterShiftBackground != null && originalMonsterShiftBackgroundDimensionsCaptured)
+            {
+                Renderer renderer = expandedMonsterShiftBackground.GetComponent<Renderer>();
+                Vector3 originalCenter = renderer != null
+                    ? renderer.bounds.center
+                    : expandedMonsterShiftBackground.transform.position;
+                SetResizableSpriteDimensions(expandedMonsterShiftBackground, originalMonsterShiftBackgroundDimensions);
+                PositionSpriteBoundsCenter(expandedMonsterShiftBackground, originalCenter);
+            }
+            expandedMonsterShiftBackground = null;
+            originalMonsterShiftBackgroundDimensions = Vector2.zero;
+            originalMonsterShiftBackgroundDimensionsCaptured = false;
         }
 
         private void UpdateExistingMapBackgroundCoverage()
@@ -3699,6 +3915,19 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix(MonsterSelector __instance)
             {
                 Instance?.UpdateMonsterSelectorBackgroundCoverage(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterShiftMenu), nameof(MonsterShiftMenu.Open))]
+        private static class MonsterShiftMenuBackgroundCoveragePatch
+        {
+            private static void Prefix(MonsterShiftMenu __instance)
+            {
+                /* Resize the backing before MenuList.Open collapses its animated
+                 * root to zero height. This preserves the game's existing
+                 * opening sequence while expanding the same native sprite.
+                 */
+                Instance?.UpdateMonsterShiftBackgroundCoverage(__instance);
             }
         }
 
