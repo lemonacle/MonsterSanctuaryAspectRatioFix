@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.22")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.23")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -66,6 +66,12 @@ namespace MonsterSanctuaryAspectRatioFix
         private bool originalMapBackgroundDimensionsCaptured;
         private readonly Dictionary<Transform, Vector3> originalMapElementLocalPositions =
             new Dictionary<Transform, Vector3>();
+        private readonly Dictionary<tk2dCameraAnchor, Camera> originalMapArrowAnchorCameras =
+            new Dictionary<tk2dCameraAnchor, Camera>();
+        private readonly Dictionary<Transform, GameObject> mapArrowOffsetWrappers =
+            new Dictionary<Transform, GameObject>();
+        private readonly Dictionary<Transform, int> originalMapArrowSiblingIndices =
+            new Dictionary<Transform, int>();
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -143,7 +149,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.22 map-layout and tooltip-switch prototype loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.23 map-arrow camera-anchor prototype loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -1461,34 +1467,89 @@ namespace MonsterSanctuaryAspectRatioFix
             }
 
             float edgeOffset = (UiCanvasHeight - OriginalHeight) * 0.5f;
-            Transform topArrow = mapMenu.TopArrow != null ? mapMenu.TopArrow.transform : null;
             Transform completion = mapMenu.AreaPercent != null ? mapMenu.AreaPercent.transform : null;
 
-            /*
-             * Preserve the authored 16:9 edge buffers. If the arrow and
-             * completion display share a hierarchy, move only their common
-             * outer element so the offset is not applied twice.
-             */
-            if (topArrow != null && completion != null && topArrow.IsChildOf(completion))
-            {
-                SetMapElementVerticalOffset(completion, edgeOffset);
-            }
-            else if (topArrow != null && completion != null && completion.IsChildOf(topArrow))
-            {
-                SetMapElementVerticalOffset(topArrow, edgeOffset);
-            }
-            else
-            {
-                SetMapElementVerticalOffset(topArrow, edgeOffset);
-                SetMapElementVerticalOffset(completion, edgeOffset);
-            }
-
-            SetMapElementVerticalOffset(
-                mapMenu.BottomArrow != null ? mapMenu.BottomArrow.transform : null,
-                -edgeOffset);
+            SetMapElementVerticalOffset(completion, edgeOffset);
+            ConfigureMapArrowForExpandedCanvas(mapMenu.TopArrow, edgeOffset, mapMenu.transform);
+            ConfigureMapArrowForExpandedCanvas(mapMenu.BottomArrow, -edgeOffset, mapMenu.transform);
             SetMapElementVerticalOffset(
                 mapMenu.MapMarkerButton != null ? mapMenu.MapMarkerButton.transform : null,
                 -edgeOffset);
+        }
+
+        private void ConfigureMapArrowForExpandedCanvas(
+            tk2dSprite arrow,
+            float verticalOffset,
+            Transform mapRoot)
+        {
+            if (arrow == null)
+            {
+                return;
+            }
+
+            /*
+             * The Map arrows are camera-anchored controls. Point their native
+             * anchors at the expanded UI camera so the existing LateUpdate
+             * places them against the 480x300/360 canvas instead of the
+             * original 480x270 camera. Native animation and visibility remain
+             * owned by the game.
+             */
+            tk2dCameraAnchor anchor = arrow.GetComponent<tk2dCameraAnchor>();
+            if (anchor != null && uiRenderCamera != null)
+            {
+                if (!originalMapArrowAnchorCameras.ContainsKey(anchor))
+                {
+                    originalMapArrowAnchorCameras.Add(anchor, anchor.AnchorCamera);
+                    Logger.LogInfo($"Retargeted Map arrow anchor '{GetTransformPath(anchor.transform, mapRoot)}' " +
+                        $"from the native UI camera to the expanded UI camera.");
+                }
+                anchor.AnchorCamera = uiRenderCamera;
+                anchor.ForceUpdateTransform();
+                return;
+            }
+
+            /*
+             * Some prefab revisions may omit a dedicated anchor. In that case
+             * place an offset wrapper above the arrow. Native code can keep
+             * writing the arrow's own transform without erasing the wrapper's
+             * expanded-canvas offset.
+             */
+            Transform arrowTransform = arrow.transform;
+            GameObject wrapper;
+            if (!mapArrowOffsetWrappers.TryGetValue(arrowTransform, out wrapper) || wrapper == null)
+            {
+                Transform originalParent = arrowTransform.parent;
+                int originalSiblingIndex = arrowTransform.GetSiblingIndex();
+                wrapper = new GameObject("AspectRatioFix " + arrow.gameObject.name + " Edge Offset");
+                wrapper.layer = arrow.gameObject.layer;
+                wrapper.transform.SetParent(originalParent, worldPositionStays: false);
+                wrapper.transform.localPosition = Vector3.zero;
+                wrapper.transform.localRotation = Quaternion.identity;
+                wrapper.transform.localScale = Vector3.one;
+                wrapper.transform.SetSiblingIndex(originalSiblingIndex);
+                arrowTransform.SetParent(wrapper.transform, worldPositionStays: false);
+                mapArrowOffsetWrappers.Add(arrowTransform, wrapper);
+                originalMapArrowSiblingIndices.Add(arrowTransform, originalSiblingIndex);
+                Logger.LogWarning($"Map arrow '{GetTransformPath(arrowTransform, mapRoot)}' has no dedicated " +
+                    "tk2dCameraAnchor; using an event-driven parent offset instead.");
+            }
+            wrapper.transform.localPosition = new Vector3(0f, verticalOffset, 0f);
+        }
+
+        private static string GetTransformPath(Transform element, Transform root)
+        {
+            if (element == null)
+            {
+                return "<missing>";
+            }
+            string path = element.name;
+            Transform current = element.parent;
+            while (current != null && current != root)
+            {
+                path = current.name + "/" + path;
+                current = current.parent;
+            }
+            return path;
         }
 
         private void SetMapElementVerticalOffset(Transform element, float verticalOffset)
@@ -1508,6 +1569,36 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void RestoreMapScreenLayout()
         {
+            foreach (KeyValuePair<tk2dCameraAnchor, Camera> entry in originalMapArrowAnchorCameras)
+            {
+                if (entry.Key != null)
+                {
+                    entry.Key.AnchorCamera = entry.Value;
+                    entry.Key.ForceUpdateTransform();
+                }
+            }
+            originalMapArrowAnchorCameras.Clear();
+
+            foreach (KeyValuePair<Transform, GameObject> entry in mapArrowOffsetWrappers)
+            {
+                Transform arrow = entry.Key;
+                GameObject wrapper = entry.Value;
+                if (arrow == null || wrapper == null)
+                {
+                    continue;
+                }
+                Transform originalParent = wrapper.transform.parent;
+                arrow.SetParent(originalParent, worldPositionStays: false);
+                int siblingIndex;
+                if (originalMapArrowSiblingIndices.TryGetValue(arrow, out siblingIndex))
+                {
+                    arrow.SetSiblingIndex(siblingIndex);
+                }
+                UnityEngine.Object.Destroy(wrapper);
+            }
+            mapArrowOffsetWrappers.Clear();
+            originalMapArrowSiblingIndices.Clear();
+
             foreach (KeyValuePair<Transform, Vector3> entry in originalMapElementLocalPositions)
             {
                 if (entry.Key != null)
