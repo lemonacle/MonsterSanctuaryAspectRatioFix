@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.21")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.22")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -64,6 +64,8 @@ namespace MonsterSanctuaryAspectRatioFix
         private tk2dTiledSprite expandedMapBackgroundSprite;
         private Vector2 originalMapBackgroundDimensions;
         private bool originalMapBackgroundDimensionsCaptured;
+        private readonly Dictionary<Transform, Vector3> originalMapElementLocalPositions =
+            new Dictionary<Transform, Vector3>();
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -141,7 +143,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.21 expanded map-background prototype loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.22 map-layout and tooltip-switch prototype loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -160,6 +162,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             RestoreNativeShadeDimensions();
             RestoreMapBackgroundDimensions();
+            RestoreMapScreenLayout();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -354,6 +357,7 @@ namespace MonsterSanctuaryAspectRatioFix
             SetCombatBuffInfoCompositePriority(false);
             RestoreNativeShadeDimensions();
             RestoreMapBackgroundDimensions();
+            RestoreMapScreenLayout();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -1355,6 +1359,7 @@ namespace MonsterSanctuaryAspectRatioFix
                     continue;
                 }
                 UpdateMapBackgroundCoverage(mapMenu);
+                ApplyMapScreenLayout(mapMenu);
                 if (expandedMapBackgroundSprite != null)
                 {
                     return;
@@ -1384,7 +1389,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
             Vector2 targetDimensions = new Vector2(
                 originalMapBackgroundDimensions.x,
-                originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
+                originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight + 2f);
             if ((background.dimensions - targetDimensions).sqrMagnitude < 0.001f)
             {
                 return;
@@ -1446,6 +1451,71 @@ namespace MonsterSanctuaryAspectRatioFix
             expandedMapBackgroundSprite = null;
             originalMapBackgroundDimensions = Vector2.zero;
             originalMapBackgroundDimensionsCaptured = false;
+        }
+
+        private void ApplyMapScreenLayout(MapMenu mapMenu)
+        {
+            if (!CropActive || mapMenu == null)
+            {
+                return;
+            }
+
+            float edgeOffset = (UiCanvasHeight - OriginalHeight) * 0.5f;
+            Transform topArrow = mapMenu.TopArrow != null ? mapMenu.TopArrow.transform : null;
+            Transform completion = mapMenu.AreaPercent != null ? mapMenu.AreaPercent.transform : null;
+
+            /*
+             * Preserve the authored 16:9 edge buffers. If the arrow and
+             * completion display share a hierarchy, move only their common
+             * outer element so the offset is not applied twice.
+             */
+            if (topArrow != null && completion != null && topArrow.IsChildOf(completion))
+            {
+                SetMapElementVerticalOffset(completion, edgeOffset);
+            }
+            else if (topArrow != null && completion != null && completion.IsChildOf(topArrow))
+            {
+                SetMapElementVerticalOffset(topArrow, edgeOffset);
+            }
+            else
+            {
+                SetMapElementVerticalOffset(topArrow, edgeOffset);
+                SetMapElementVerticalOffset(completion, edgeOffset);
+            }
+
+            SetMapElementVerticalOffset(
+                mapMenu.BottomArrow != null ? mapMenu.BottomArrow.transform : null,
+                -edgeOffset);
+            SetMapElementVerticalOffset(
+                mapMenu.MapMarkerButton != null ? mapMenu.MapMarkerButton.transform : null,
+                -edgeOffset);
+        }
+
+        private void SetMapElementVerticalOffset(Transform element, float verticalOffset)
+        {
+            if (element == null)
+            {
+                return;
+            }
+            Vector3 originalPosition;
+            if (!originalMapElementLocalPositions.TryGetValue(element, out originalPosition))
+            {
+                originalPosition = element.localPosition;
+                originalMapElementLocalPositions.Add(element, originalPosition);
+            }
+            element.localPosition = originalPosition + new Vector3(0f, verticalOffset, 0f);
+        }
+
+        private void RestoreMapScreenLayout()
+        {
+            foreach (KeyValuePair<Transform, Vector3> entry in originalMapElementLocalPositions)
+            {
+                if (entry.Key != null)
+                {
+                    entry.Key.localPosition = entry.Value;
+                }
+            }
+            originalMapElementLocalPositions.Clear();
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -3467,6 +3537,31 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix(MapMenu __instance)
             {
                 Instance?.UpdateMapBackgroundCoverage(__instance);
+                Instance?.ApplyMapScreenLayout(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(SkillMenu), "SwitchMonster", new System.Type[] { typeof(bool) })]
+        private static class SkillMenuSwitchMonsterTooltipPatch
+        {
+            private static void Postfix(SkillMenu __instance)
+            {
+                if (__instance != null)
+                {
+                    Instance?.OnTooltipOpened(__instance.Tooltip);
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(InventoryMenu), "SwitchMonster", new System.Type[] { typeof(bool) })]
+        private static class InventoryMenuSwitchMonsterTooltipPatch
+        {
+            private static void Postfix(InventoryMenu __instance)
+            {
+                if (__instance != null)
+                {
+                    Instance?.OnTooltipOpened(__instance.ItemTooltip);
+                }
             }
         }
 
