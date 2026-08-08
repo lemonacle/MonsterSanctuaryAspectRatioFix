@@ -2,7 +2,7 @@
 
 A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 and 16:10 resolutions while preserving the game's original presentation at 16:9.
 
-**Current release: v2.1.11**
+**Current release: v2.1.27**
 
 ## Features
 
@@ -17,15 +17,17 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 - Supports switching between compatible resolutions during the same session.
 - Applies menu and dynamically generated UI corrections through lifecycle events rather than continuous menu polling.
 
-## v2.1.11 highlights
+## v2.1.27 highlights
 
-- Added universal menu and submenu presentation handling.
-- Fixed dynamically generated menu items appearing behind their parent windows.
-- Fixed menu registration after loading a game or returning to the title screen.
-- Corrected the main title logo, familiar-selection sequence, naming-screen particle effects, and scrolling credits.
-- Improved New Game, New Game+, Online Arena, Skills, Inventory, Equipment, and Costume menu presentation.
-- Corrected combat tooltips, buff/debuff information, result screens, and the animated **Victory!** banner.
-- Removed the legacy continuous menu-state polling behavior.
+- Completes the 4:3 presentation pass with no remaining visual artifacts found during testing.
+- Uses a pixel-preserving expanded UI canvas so menus retain their original scale and proportions.
+- Extends the native menu shade across the complete frame without duplicated bands or visible seams.
+- Preserves full-frame main-menu and scene-transition fades.
+- Expands the Map backing, anchors its controls and arrows to the added vertical space, and preserves native scrolling behavior.
+- Expands the Following Monster, catalyst evolution, Switch Shift, and Select Shift backgrounds across the complete canvas.
+- Keeps combat Buff Info icons aligned with health bars while rendering them above the shade and combat menus.
+- Corrects Skills, Inventory, Feed, and Consumables tooltip presentation during monster switching.
+- Retains targeted diagnostic logging for the upcoming cleanup and refactoring pass.
 
 ## Requirements
 
@@ -116,8 +118,8 @@ BepInEx/LogOutput.log
 A successful installation should include entries similar to:
 
 ```text
-Loading [Aspect Ratio Fix 2.1.11]
-Aspect Ratio Fix 2.1.11 4:3 and 16:10 camera-policy plugin loaded.
+Loading [Aspect Ratio Fix 2.1.27]
+Aspect Ratio Fix 2.1.27 Monster Shift background coverage patch loaded.
 ```
 
 If the log file is not created or the plugin does not appear in it, check that:
@@ -143,7 +145,7 @@ Other aspect ratios are currently left unchanged.
 
 - The familiar-selection screen may briefly begin at its original position before centering as its interactive elements appear.
 - 16:10 uses the same presentation system as 4:3, but has not yet received the same exhaustive regression pass.
-- The map screen remains on its current presentation. A dedicated map redesign is planned separately rather than being included in v2.1.11.
+- Targeted selector, Shift-background, and shade diagnostics remain enabled to support the upcoming cleanup and refactoring pass.
 
 ## Roadmap
 
@@ -166,7 +168,7 @@ The following items are planned for future updates. They are priorities rather t
 
 ### Future presentation work
 
-- Redesign the map screen so the map fills the available display while its controls retain their original size and placement.
+- Explore optional presentation enhancements that make deliberate use of the additional vertical space.
 - Address additional aspect ratios only where they can be supported without compromising the existing 4:3, 16:10, and 16:9 behavior.
 
 ## Building
