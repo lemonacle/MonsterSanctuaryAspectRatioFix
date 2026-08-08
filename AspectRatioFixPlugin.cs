@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.18")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.20")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -19,6 +19,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private const float UiAspect = 16f / 9f;
         private static float VisibleWorldWidth { get; set; } = 360f;
         private static float TargetAspect { get; set; } = AspectRatioFixAspect;
+        private static int UiCanvasHeight => Mathf.RoundToInt(OriginalWidth / TargetAspect);
         private static float HorizontalHudInset => (OriginalWidth - VisibleWorldWidth) / 2f;
         internal static bool CropActive { get; private set; }
         internal static bool UiCompositeActive { get; private set; }
@@ -48,6 +49,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject uiQuadObject;
         private MeshRenderer uiQuadRenderer;
         private Material uiQuadMaterial;
+        private int validatedUiProjectionHeight = -1;
         private int tooltipLayer = -1;
         private GameObject tooltipCameraObject;
         private Camera tooltipRenderCamera;
@@ -56,11 +58,9 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject tooltipQuadObject;
         private MeshRenderer tooltipQuadRenderer;
         private Material tooltipQuadMaterial;
-        private GameObject topShadeBandObject;
-        private GameObject bottomShadeBandObject;
-        private tk2dTiledSprite topShadeBandSprite;
-        private tk2dTiledSprite bottomShadeBandSprite;
-        private int shadeBandWorldLayer = -1;
+        private tk2dTiledSprite expandedShadeSprite;
+        private Vector2 originalShadeDimensions;
+        private bool originalShadeDimensionsCaptured;
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -138,7 +138,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.18 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.20 pixel-preserving expanded-UI-canvas prototype loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -155,7 +155,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(sceneRegistrationCoroutine);
                 sceneRegistrationCoroutine = null;
             }
-            DestroyShadeBands();
+            RestoreNativeShadeDimensions();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -191,7 +191,7 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
             UpdateTooltipQuadLayout();
-            UpdateShadeBandCoverage();
+            UpdateNativeShadeCoverage();
             UpdateCombatForegroundPresentation();
         }
 
@@ -235,6 +235,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             primaryCamera = activePixelCamera.GetComponent<Camera>();
             primaryTkCamera = activePixelCamera.GetComponent<tk2dCamera>();
+            validatedUiProjectionHeight = -1;
             finalWorldQuad = FinalCamRectField.GetValue(activePixelCamera) as MeshRenderer;
             finalTkCamera = FinalCameraField.GetValue(activePixelCamera) as tk2dCamera;
             if (primaryCamera == null || primaryCamera.targetTexture == null || primaryTkCamera == null || finalWorldQuad == null ||
@@ -288,8 +289,8 @@ namespace MonsterSanctuaryAspectRatioFix
                     }
                 }
             }
-            Logger.LogInfo($"Aspect Ratio Fix applied with separate UI composite: " +
-                $"world={VisibleWorldWidth:0}x270 crop, UI=480x270, " +
+            Logger.LogInfo($"Aspect Ratio Fix applied with expanded UI composite: " +
+                $"world={VisibleWorldWidth:0}x270 crop, UI=480x{UiCanvasHeight}, " +
                 $"screen={Screen.width}x{Screen.height}, " +
                 $"uiLayer={uiLayer}, tooltipLayer={tooltipLayer}.");
         }
@@ -347,7 +348,7 @@ namespace MonsterSanctuaryAspectRatioFix
             TooltipCompositeActive = false;
             UiInputActive = false;
             SetCombatBuffInfoCompositePriority(false);
-            DestroyShadeBands();
+            RestoreNativeShadeDimensions();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -434,16 +435,22 @@ namespace MonsterSanctuaryAspectRatioFix
                         "for combat Buff Info foreground icons.");
                 }
             }
+            int uiCanvasHeight = UiCanvasHeight;
             if (uiRenderTexture == null)
             {
-                uiRenderTexture = new RenderTexture(OriginalWidth, OriginalHeight, 24, RenderTextureFormat.ARGB32);
-                uiRenderTexture.name = "AspectRatioFix_UI_480x270";
+                uiRenderTexture = new RenderTexture(OriginalWidth, uiCanvasHeight, 24, RenderTextureFormat.ARGB32);
+                uiRenderTexture.name = $"AspectRatioFix_UI_480x{uiCanvasHeight}";
                 uiRenderTexture.filterMode = FilterMode.Point;
                 uiRenderTexture.wrapMode = TextureWrapMode.Clamp;
                 uiRenderTexture.useMipMap = false;
                 uiRenderTexture.autoGenerateMips = false;
                 uiRenderTexture.antiAliasing = 1;
                 uiRenderTexture.Create();
+            }
+            else if (uiRenderTexture.width != OriginalWidth || uiRenderTexture.height != uiCanvasHeight)
+            {
+                ResizeRenderTexture(uiRenderTexture, OriginalWidth, uiCanvasHeight);
+                uiRenderTexture.name = $"AspectRatioFix_UI_480x{uiCanvasHeight}";
             }
             if (tooltipLayer >= 0 && tooltipRenderTexture == null)
             {
@@ -480,6 +487,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 CreateCombatForegroundQuad();
             }
+            ConfigureExpandedUiCamera();
             if (uiRenderCamera != null)
             {
                 uiRenderCamera.enabled = true;
@@ -550,9 +558,7 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderCamera.allowHDR = false;
             uiRenderCamera.allowMSAA = false;
             uiRenderTkCamera = uiCameraObject.AddComponent<tk2dCamera>();
-            uiRenderTkCamera.InheritConfig = primaryTkCamera;
-            uiRenderTkCamera.nativeResolutionWidth = OriginalWidth;
-            uiRenderTkCamera.nativeResolutionHeight = OriginalHeight;
+            ConfigureExpandedUiProjection();
             uiInputCamera = uiCameraObject.AddComponent<tk2dUICamera>();
             tk2dUICamera existingUiCamera = primaryCamera.GetComponent<tk2dUICamera>();
             if (existingUiCamera != null && UiRaycastTypeField != null)
@@ -563,6 +569,119 @@ namespace MonsterSanctuaryAspectRatioFix
             uiInputCamera.AssignRaycastLayerMask(1 << uiLayer);
             uiCameraObject.SetActive(true);
             uiRenderTkCamera.UpdateCameraMatrix();
+            CenterExpandedUiCamera();
+        }
+
+        private void ConfigureExpandedUiCamera()
+        {
+            if (uiRenderCamera == null || uiRenderTkCamera == null || uiRenderTexture == null)
+            {
+                return;
+            }
+            uiRenderCamera.targetTexture = uiRenderTexture;
+            ConfigureExpandedUiProjection();
+            uiRenderTkCamera.UpdateCameraMatrix();
+            CenterExpandedUiCamera();
+            ValidateExpandedUiProjection();
+        }
+
+        private void ConfigureExpandedUiProjection()
+        {
+            if (uiRenderTkCamera == null || primaryTkCamera == null)
+            {
+                return;
+            }
+
+            /*
+             * Do not inherit the primary camera's resolution override here.
+             * The game's override is authored for a 480x270 target and may use
+             * StretchToFit. Applying it to a 480x300/360 target projects the
+             * same 270-row UI view across every row of the taller texture.
+             *
+             * Copy the underlying camera convention instead, then give this
+             * camera a wildcard FitVisible override whose native resolution
+             * exactly matches the expanded target. This preserves one world
+             * unit per original UI pixel on both axes and reveals additional
+             * vertical world space without rescaling any UI geometry.
+             */
+            tk2dCamera sourceRoot = primaryTkCamera.SettingsRoot;
+            tk2dCameraSettings sourceSettings = sourceRoot.CameraSettings;
+            tk2dCameraSettings targetSettings = uiRenderTkCamera.CameraSettings;
+
+            uiRenderTkCamera.InheritConfig = null;
+            uiRenderTkCamera.nativeResolutionWidth = OriginalWidth;
+            uiRenderTkCamera.nativeResolutionHeight = UiCanvasHeight;
+            uiRenderTkCamera.ZoomFactor = primaryTkCamera.ZoomFactor;
+            uiRenderTkCamera.resolutionOverride = new[]
+            {
+                tk2dCameraResolutionOverride.DefaultOverride
+            };
+
+            targetSettings.projection = sourceSettings.projection;
+            targetSettings.orthographicType = sourceSettings.orthographicType;
+            targetSettings.orthographicOrigin = sourceSettings.orthographicOrigin;
+            targetSettings.orthographicPixelsPerMeter = sourceSettings.orthographicPixelsPerMeter;
+            targetSettings.orthographicSize = sourceSettings.orthographicSize;
+            if (sourceSettings.orthographicType == tk2dCameraSettings.OrthographicType.OrthographicSize)
+            {
+                float sourceNativeHeight = Mathf.Max(1f, sourceRoot.nativeResolutionHeight);
+                targetSettings.orthographicSize *= UiCanvasHeight / sourceNativeHeight;
+            }
+            targetSettings.transparencySortMode = sourceSettings.transparencySortMode;
+            targetSettings.fieldOfView = sourceSettings.fieldOfView;
+            targetSettings.rect = new Rect(0f, 0f, 1f, 1f);
+        }
+
+        private void CenterExpandedUiCamera()
+        {
+            if (uiCameraObject == null || uiRenderTkCamera == null || primaryTkCamera == null)
+            {
+                return;
+            }
+            Vector2 centerOffset = primaryTkCamera.ScreenExtents.center - uiRenderTkCamera.ScreenExtents.center;
+            uiCameraObject.transform.localPosition = new Vector3(centerOffset.x, centerOffset.y, 0f);
+        }
+
+        private void ValidateExpandedUiProjection()
+        {
+            if (uiRenderTexture == null || uiRenderTkCamera == null || primaryTkCamera == null ||
+                validatedUiProjectionHeight == UiCanvasHeight)
+            {
+                return;
+            }
+
+            Rect primaryExtents = primaryTkCamera.ScreenExtents;
+            Rect uiExtents = uiRenderTkCamera.ScreenExtents;
+            if (primaryExtents.width <= 0f || primaryExtents.height <= 0f ||
+                uiExtents.width <= 0f || uiExtents.height <= 0f)
+            {
+                return;
+            }
+
+            float primaryPixelsPerUnitX = OriginalWidth / primaryExtents.width;
+            float primaryPixelsPerUnitY = OriginalHeight / primaryExtents.height;
+            float uiPixelsPerUnitX = uiRenderTexture.width / uiExtents.width;
+            float uiPixelsPerUnitY = uiRenderTexture.height / uiExtents.height;
+            const float tolerance = 0.001f;
+            bool uniform = Mathf.Abs(uiPixelsPerUnitX - uiPixelsPerUnitY) <= tolerance;
+            bool matchesOriginal = Mathf.Abs(uiPixelsPerUnitX - primaryPixelsPerUnitX) <= tolerance &&
+                Mathf.Abs(uiPixelsPerUnitY - primaryPixelsPerUnitY) <= tolerance;
+            bool correctAspect = Mathf.Abs(uiExtents.width / uiExtents.height - TargetAspect) <= tolerance;
+
+            validatedUiProjectionHeight = UiCanvasHeight;
+            bool validationFailed = !(uniform && matchesOriginal && correctAspect);
+            if (validationFailed)
+            {
+                Logger.LogError($"Expanded UI projection validation failed: " +
+                    $"primaryScale={primaryPixelsPerUnitX:0.###}x{primaryPixelsPerUnitY:0.###}, " +
+                    $"uiScale={uiPixelsPerUnitX:0.###}x{uiPixelsPerUnitY:0.###}, " +
+                    $"uiExtents={uiExtents.width:0.###}x{uiExtents.height:0.###}.");
+            }
+            else
+            {
+                Logger.LogInfo($"Expanded UI projection validated at 480x{UiCanvasHeight}: " +
+                    $"uniform scale={uiPixelsPerUnitX:0.###} pixels per world unit.");
+            }
         }
 
         private void CreateUiQuad()
@@ -756,7 +875,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void DestroyUiPipeline()
         {
-            DestroyShadeBands();
+            RestoreNativeShadeDimensions();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
@@ -832,6 +951,7 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderTkCamera = null;
             uiInputCamera = null;
             uiQuadRenderer = null;
+            validatedUiProjectionHeight = -1;
             combatForegroundRenderCamera = null;
             combatForegroundRenderTkCamera = null;
             combatForegroundQuadRenderer = null;
@@ -848,7 +968,7 @@ namespace MonsterSanctuaryAspectRatioFix
             uiCameraObject.transform.localRotation = Quaternion.identity;
             uiRenderCamera.nearClipPlane = primaryCamera.nearClipPlane;
             uiRenderCamera.farClipPlane = primaryCamera.farClipPlane;
-            uiRenderTkCamera?.UpdateCameraMatrix();
+            ConfigureExpandedUiCamera();
         }
 
         private void UpdateTooltipCameraTransform()
@@ -871,22 +991,17 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            float screenAspect = Screen.width / (float)Screen.height;
-            float widthRatio = 1f;
-            float heightRatio = 1f;
-            if (screenAspect < UiAspect)
-            {
-                heightRatio = screenAspect / UiAspect;
-            }
-            else
-            {
-                widthRatio = UiAspect / screenAspect;
-            }
-            uiQuadObject.transform.localScale = new Vector3(finalWorldQuad.transform.localScale.x * widthRatio,
-                finalWorldQuad.transform.localScale.y * heightRatio, finalWorldQuad.transform.localScale.z);
+            /*
+             * The UI render texture now has the same aspect as the physical
+             * output, so present it across the complete final quad. The
+             * original 480x270 menu coordinate region remains centered inside
+             * the taller 480x300 or 480x360 camera view.
+             */
+            uiQuadObject.transform.localScale = finalWorldQuad.transform.localScale;
             Vector3 center = finalWorldQuad.bounds.center;
             center -= finalTkCamera.transform.forward * 0.01f;
             uiQuadObject.transform.position = center;
+            float screenAspect = Screen.width / (float)Screen.height;
             float uiPixelWidth;
             float uiPixelHeight;
             if (screenAspect < UiAspect)
@@ -899,8 +1014,8 @@ namespace MonsterSanctuaryAspectRatioFix
                 uiPixelHeight = Screen.height;
                 uiPixelWidth = Screen.height * UiAspect;
             }
-            UiScreenRectPixels = new Rect((Screen.width - uiPixelWidth) / 2f, (Screen.height - uiPixelHeight) / 2f, uiPixelWidth,
-                uiPixelHeight);
+            UiScreenRectPixels = new Rect((Screen.width - uiPixelWidth) / 2f,
+                (Screen.height - uiPixelHeight) / 2f, uiPixelWidth, uiPixelHeight);
         }
 
         private void UpdateTooltipQuadLayout()
@@ -1038,8 +1153,9 @@ namespace MonsterSanctuaryAspectRatioFix
             if (uiController != null)
             {
                 /*
-                 * Move menu and dialogue roots to the separate 480x270
-                 * camera. Exploration HUD elements remain on the cropped
+                 * Move menu and dialogue roots to the separate expanded UI
+                 * camera. Their authored 480x270 region stays centered.
+                 * Exploration HUD elements remain on the cropped
                  * world presentation and are inset to the visible output
                  * edges. Full-frame effects remain on the world layer so
                  * they cover the entire cropped output.
@@ -1164,93 +1280,35 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipQuadLayout();
         }
 
-        private void EnsureShadeBands()
-        {
-            if (!CropActive || topShadeBandObject != null)
-            {
-                return;
-            }
-            UIController controller = UIController.Instance;
-            ShadeLayer shade = controller != null ? controller.ShadeLayer : null;
-            if (shade == null || shade.layer == null)
-            {
-                return;
-            }
-            int sourceLayer;
-            if (!originalLayers.TryGetValue(shade.layer.gameObject, out sourceLayer))
-            {
-                sourceLayer = primaryCamera != null ? primaryCamera.gameObject.layer : 0;
-            }
-            shadeBandWorldLayer = sourceLayer;
-            topShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
-            bottomShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
-            topShadeBandObject.name = "AspectRatioFix Top Shade Band";
-            bottomShadeBandObject.name = "AspectRatioFix Bottom Shade Band";
-            topShadeBandSprite = topShadeBandObject.GetComponent<tk2dTiledSprite>();
-            bottomShadeBandSprite = bottomShadeBandObject.GetComponent<tk2dTiledSprite>();
-            foreach (ColorTween tween in topShadeBandObject.GetComponents<ColorTween>())
-            {
-                tween.enabled = false;
-            }
-            foreach (ColorTween tween in bottomShadeBandObject.GetComponents<ColorTween>())
-            {
-                tween.enabled = false;
-            }
-            SetLayerRecursively(topShadeBandObject, sourceLayer);
-            SetLayerRecursively(bottomShadeBandObject, sourceLayer);
-            topShadeBandObject.SetActive(false);
-            bottomShadeBandObject.SetActive(false);
-        }
-
-        private void UpdateShadeBandCoverage()
+        private void UpdateNativeShadeCoverage()
         {
             if (!CropActive)
             {
                 return;
             }
-            EnsureShadeBands();
             UIController controller = UIController.Instance;
             ShadeLayer shade = controller != null ? controller.ShadeLayer : null;
-            if (shade == null || shade.layer == null || topShadeBandSprite == null ||
-                bottomShadeBandSprite == null || primaryCamera == null)
+            tk2dTiledSprite shadeSprite = shade != null ? shade.layer : null;
+            if (shadeSprite == null)
             {
                 return;
             }
-            float uiLogicalHeight = VisibleWorldWidth / UiAspect;
-            float bandHeight = Mathf.Max(0f, (OriginalHeight - uiLogicalHeight) * 0.5f);
-            /*
-             * The world-space shade bands and the centered UI composite both
-             * rasterize their shared edge. At non-integer output scales that
-             * made one or two physical rows receive the shade twice. Pull the
-             * inner edge of each band outward by two physical pixels while
-             * leaving its outer edge fixed; the native UI shade already owns
-             * those boundary pixels.
-             */
-            float seamTrim = Screen.height > 0
-                ? Mathf.Min(bandHeight, OriginalHeight * 2f / Screen.height)
-                : 0f;
-            float renderedBandHeight = Mathf.Max(0f, bandHeight - seamTrim);
-            bool visible = renderedBandHeight > 0.01f && shade.layer.color.a > 0.001f;
-            topShadeBandObject.SetActive(visible);
-            bottomShadeBandObject.SetActive(visible);
-            if (!visible)
+            if (expandedShadeSprite != shadeSprite)
+            {
+                RestoreNativeShadeDimensions();
+                expandedShadeSprite = shadeSprite;
+                originalShadeDimensions = shadeSprite.dimensions;
+                originalShadeDimensionsCaptured = true;
+            }
+            Vector2 targetDimensions = new Vector2(OriginalWidth, UiCanvasHeight);
+            if ((shadeSprite.dimensions - targetDimensions).sqrMagnitude < 0.001f)
             {
                 return;
             }
-            topShadeBandSprite.color = shade.layer.color;
-            bottomShadeBandSprite.color = shade.layer.color;
-            topShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, renderedBandHeight);
-            bottomShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, renderedBandHeight);
-
-            Vector3 shadeCenter = shade.layer.GetComponent<Renderer>().bounds.center;
-            float bandCenterOffset = (uiLogicalHeight + bandHeight + seamTrim) * 0.5f;
-            Vector3 offset = primaryCamera.transform.up * bandCenterOffset;
-            PositionSpriteBoundsCenter(topShadeBandSprite, shadeCenter + offset);
-            PositionSpriteBoundsCenter(bottomShadeBandSprite, shadeCenter - offset);
-            topShadeBandObject.transform.position = Utils.VectorChangeZ(topShadeBandObject.transform.position,
-                shade.transform.position.z);
-            bottomShadeBandObject.transform.position = Utils.VectorChangeZ(bottomShadeBandObject.transform.position,
-                shade.transform.position.z);
+            Renderer renderer = shadeSprite.GetComponent<Renderer>();
+            Vector3 originalCenter = renderer != null ? renderer.bounds.center : shadeSprite.transform.position;
+            shadeSprite.dimensions = targetDimensions;
+            PositionSpriteBoundsCenter(shadeSprite, originalCenter);
         }
 
         private static void PositionSpriteBoundsCenter(tk2dTiledSprite sprite, Vector3 targetCenter)
@@ -1262,35 +1320,20 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
-        private void DestroyShadeBands()
+        private void RestoreNativeShadeDimensions()
         {
-            if (topShadeBandObject != null)
+            if (expandedShadeSprite != null && originalShadeDimensionsCaptured)
             {
-                UnityEngine.Object.Destroy(topShadeBandObject);
+                Renderer renderer = expandedShadeSprite.GetComponent<Renderer>();
+                Vector3 originalCenter = renderer != null
+                    ? renderer.bounds.center
+                    : expandedShadeSprite.transform.position;
+                expandedShadeSprite.dimensions = originalShadeDimensions;
+                PositionSpriteBoundsCenter(expandedShadeSprite, originalCenter);
             }
-            if (bottomShadeBandObject != null)
-            {
-                UnityEngine.Object.Destroy(bottomShadeBandObject);
-            }
-            topShadeBandObject = null;
-            bottomShadeBandObject = null;
-            topShadeBandSprite = null;
-            bottomShadeBandSprite = null;
-            shadeBandWorldLayer = -1;
-        }
-
-        private void SetShadeBandsInCombatForeground(bool foreground)
-        {
-            EnsureShadeBands();
-            int targetLayer = foreground && combatForegroundLayer >= 0
-                ? combatForegroundLayer
-                : shadeBandWorldLayer;
-            if (targetLayer < 0)
-            {
-                return;
-            }
-            SetLayerRecursively(topShadeBandObject, targetLayer);
-            SetLayerRecursively(bottomShadeBandObject, targetLayer);
+            expandedShadeSprite = null;
+            originalShadeDimensions = Vector2.zero;
+            originalShadeDimensionsCaptured = false;
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -1509,7 +1552,7 @@ namespace MonsterSanctuaryAspectRatioFix
              * with manual offsets. That split the authored layout.
              *
              * The full MenuList root and its separate information panel
-             * now render together through the complete 480x270 UI layer.
+             * now render together through the expanded UI layer.
              * The surrounding intro scenes remain on the cropped gameplay
              * presentation and therefore transition naturally into play.
              */
@@ -1923,7 +1966,7 @@ namespace MonsterSanctuaryAspectRatioFix
              *
              * - sample the selected centered region of the 480x270 texture;
              * - fill the complete 4:3 or 16:10 output;
-             * - keep the separate UI composite at the full 480x270 frame.
+             * - keep the separate UI composite across the full output.
              */
             if (!SetWorldUvCropState(finalWorldQuad, cropped: true))
             {
@@ -2085,7 +2128,6 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             else
             {
-                SetShadeBandsInCombatForeground(false);
                 if (combatForegroundQuadRenderer != null)
                 {
                     combatForegroundQuadRenderer.enabled = false;
@@ -2270,15 +2312,6 @@ namespace MonsterSanctuaryAspectRatioFix
              * health-bar alignment and remains in the foreground UI composite.
              */
             SetUiComponentLayer(buffInfoMenu.BuffInfo, true);
-            /*
-             * The centered native shade already covers the portion of the
-             * tooltip inside the 16:9 UI composite. While combat Buff Info is
-             * open, render only the exposed top/bottom shade bands through the
-             * same full-frame foreground presentation as the icons. This puts
-             * the shade above the bottom-anchored tooltip without changing the
-             * icon coordinate space or double-shading the center.
-             */
-            SetShadeBandsInCombatForeground(foreground);
             if (combatForegroundQuadRenderer != null)
             {
                 combatForegroundQuadRenderer.enabled = foreground;
@@ -2292,9 +2325,8 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
             /*
-             * Draw the regular UI composite above the tooltip so the native
-             * center shade and Buff Info panel both win there. The foreground
-             * shade bands handle the tooltip area outside the centered UI.
+             * Draw the expanded UI composite above the tooltip so the single
+             * native shade and Buff Info panel win across the complete frame.
              */
             SetCombatBuffInfoCompositePriority(true);
             SetBuffInfoIconForeground(buffInfoMenu, true);
@@ -2327,7 +2359,6 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             else
             {
-                SetShadeBandsInCombatForeground(false);
                 if (combatForegroundQuadRenderer != null)
                 {
                     combatForegroundQuadRenderer.enabled = false;
@@ -2409,12 +2440,15 @@ namespace MonsterSanctuaryAspectRatioFix
                 minimumViewportY = Mathf.Min(minimumViewportY, uiRenderCamera.WorldToViewportPoint(corner).y);
             }
             const float BottomMarginPixels = 3f;
-            float targetViewportY = BottomMarginPixels / OriginalHeight;
+            float originalUiBottom = (UiCanvasHeight - OriginalHeight) * 0.5f;
+            float targetViewportY = (originalUiBottom + BottomMarginPixels) / UiCanvasHeight;
             if (minimumViewportY >= targetViewportY)
             {
                 return;
             }
-            float verticalWorldSpan = uiRenderCamera.orthographicSize * 2f;
+            float verticalWorldSpan = uiRenderTkCamera != null
+                ? uiRenderTkCamera.ScreenExtents.height
+                : uiRenderCamera.orthographicSize * 2f;
             float shift = (targetViewportY - minimumViewportY) * verticalWorldSpan;
             buffInfo.transform.position += uiRenderCamera.transform.up * shift;
         }
@@ -2795,17 +2829,16 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             if (uiController.ShadeLayer != null)
             {
-                // The native center shade stays inside the UI composite for its
-                // original menu-to-menu Z ordering. Separate non-overlapping
-                // band fills cover only the output outside that 16:9 composite.
+                // Keep the native shade in the UI depth stack. The expanded UI
+                // canvas lets this single sprite cover the complete output.
                 AssignUiComponent(uiController.ShadeLayer);
-                EnsureShadeBands();
+                UpdateNativeShadeCoverage();
             }
             if (uiController.Dialogue != null && uiController.Dialogue.NarrationBackground != null)
             {
                 /*
                  * The dialogue text and controls render through the
-                 * full 480x270 UI composite. The narration dimmer is
+                 * expanded UI composite. The narration dimmer is
                  * returned to the cropped world presentation so the
                  * dark effect covers the entire cropped frame rather than
                  * leaving uncovered bands above and below.
@@ -3124,6 +3157,8 @@ namespace MonsterSanctuaryAspectRatioFix
 
         internal static Vector2 ConvertUiMousePosition(Vector2 physicalPosition)
         {
+            // The game's manual menu-hover math still uses the authored
+            // 480x270 coordinate region centered inside the expanded canvas.
             if (!UiCompositeActive || UiScreenRectPixels.width <= 0f || UiScreenRectPixels.height <= 0f)
             {
                 return physicalPosition;
@@ -3135,6 +3170,18 @@ namespace MonsterSanctuaryAspectRatioFix
             float logicalX = (physicalPosition.x - UiScreenRectPixels.xMin) * (OriginalWidth / UiScreenRectPixels.width);
             float logicalY = (physicalPosition.y - UiScreenRectPixels.yMin) * (OriginalHeight / UiScreenRectPixels.height);
             return new Vector2(logicalX, logicalY);
+        }
+
+        internal static Vector2 ConvertUiRaycastPosition(Vector2 physicalPosition)
+        {
+            // The tk2d UI camera raycasts against the complete expanded render
+            // target, so it needs 480x300 or 480x360 texture coordinates.
+            if (!UiCompositeActive || Screen.width <= 0 || Screen.height <= 0)
+            {
+                return physicalPosition;
+            }
+            return new Vector2(physicalPosition.x * OriginalWidth / Screen.width,
+                physicalPosition.y * UiCanvasHeight / Screen.height);
         }
         private struct CameraBoundsPatchState
         {
@@ -3571,7 +3618,7 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             private static void Postfix()
             {
-                Instance?.UpdateShadeBandCoverage();
+                Instance?.UpdateNativeShadeCoverage();
             }
         }
 
@@ -3582,7 +3629,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 // Hide can reveal the preceding entry in ShadeLayer's stack;
                 // keep the shared shade expanded while that entry remains.
-                Instance?.UpdateShadeBandCoverage();
+                Instance?.UpdateNativeShadeCoverage();
             }
         }
 
@@ -3720,7 +3767,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 if (UiInputActive)
                 {
-                    screenPos = ConvertUiMousePosition(screenPos);
+                    screenPos = ConvertUiRaycastPosition(screenPos);
                 }
             }
         }
