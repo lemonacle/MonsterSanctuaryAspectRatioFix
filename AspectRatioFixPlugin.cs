@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.17")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.18")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -60,6 +60,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject bottomShadeBandObject;
         private tk2dTiledSprite topShadeBandSprite;
         private tk2dTiledSprite bottomShadeBandSprite;
+        private int shadeBandWorldLayer = -1;
         private int combatForegroundLayer = -1;
         private GameObject combatForegroundCameraObject;
         private Camera combatForegroundRenderCamera;
@@ -137,7 +138,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.17 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.18 4:3 and 16:10 camera-policy plugin loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -1180,6 +1181,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 sourceLayer = primaryCamera != null ? primaryCamera.gameObject.layer : 0;
             }
+            shadeBandWorldLayer = sourceLayer;
             topShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
             bottomShadeBandObject = UnityEngine.Object.Instantiate(shade.layer.gameObject);
             topShadeBandObject.name = "AspectRatioFix Top Shade Band";
@@ -1216,7 +1218,19 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             float uiLogicalHeight = VisibleWorldWidth / UiAspect;
             float bandHeight = Mathf.Max(0f, (OriginalHeight - uiLogicalHeight) * 0.5f);
-            bool visible = bandHeight > 0.01f && shade.layer.color.a > 0.001f;
+            /*
+             * The world-space shade bands and the centered UI composite both
+             * rasterize their shared edge. At non-integer output scales that
+             * made one or two physical rows receive the shade twice. Pull the
+             * inner edge of each band outward by two physical pixels while
+             * leaving its outer edge fixed; the native UI shade already owns
+             * those boundary pixels.
+             */
+            float seamTrim = Screen.height > 0
+                ? Mathf.Min(bandHeight, OriginalHeight * 2f / Screen.height)
+                : 0f;
+            float renderedBandHeight = Mathf.Max(0f, bandHeight - seamTrim);
+            bool visible = renderedBandHeight > 0.01f && shade.layer.color.a > 0.001f;
             topShadeBandObject.SetActive(visible);
             bottomShadeBandObject.SetActive(visible);
             if (!visible)
@@ -1225,11 +1239,12 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             topShadeBandSprite.color = shade.layer.color;
             bottomShadeBandSprite.color = shade.layer.color;
-            topShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, bandHeight);
-            bottomShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, bandHeight);
+            topShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, renderedBandHeight);
+            bottomShadeBandSprite.dimensions = new Vector2(VisibleWorldWidth, renderedBandHeight);
 
             Vector3 shadeCenter = shade.layer.GetComponent<Renderer>().bounds.center;
-            Vector3 offset = primaryCamera.transform.up * ((uiLogicalHeight + bandHeight) * 0.5f);
+            float bandCenterOffset = (uiLogicalHeight + bandHeight + seamTrim) * 0.5f;
+            Vector3 offset = primaryCamera.transform.up * bandCenterOffset;
             PositionSpriteBoundsCenter(topShadeBandSprite, shadeCenter + offset);
             PositionSpriteBoundsCenter(bottomShadeBandSprite, shadeCenter - offset);
             topShadeBandObject.transform.position = Utils.VectorChangeZ(topShadeBandObject.transform.position,
@@ -1261,6 +1276,21 @@ namespace MonsterSanctuaryAspectRatioFix
             bottomShadeBandObject = null;
             topShadeBandSprite = null;
             bottomShadeBandSprite = null;
+            shadeBandWorldLayer = -1;
+        }
+
+        private void SetShadeBandsInCombatForeground(bool foreground)
+        {
+            EnsureShadeBands();
+            int targetLayer = foreground && combatForegroundLayer >= 0
+                ? combatForegroundLayer
+                : shadeBandWorldLayer;
+            if (targetLayer < 0)
+            {
+                return;
+            }
+            SetLayerRecursively(topShadeBandObject, targetLayer);
+            SetLayerRecursively(bottomShadeBandObject, targetLayer);
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -2049,6 +2079,18 @@ namespace MonsterSanctuaryAspectRatioFix
                 combatBuffInfoLayoutCoroutine = null;
             }
             SetCombatBuffInfoCompositePriority(false);
+            if (combatUi?.BuffInfoMenu != null)
+            {
+                SetBuffInfoIconForeground(combatUi.BuffInfoMenu, false);
+            }
+            else
+            {
+                SetShadeBandsInCombatForeground(false);
+                if (combatForegroundQuadRenderer != null)
+                {
+                    combatForegroundQuadRenderer.enabled = false;
+                }
+            }
             RestoreVictoryBannerLayout(combatUi != null ? combatUi.VictoryScreen : null);
             SetCombatUiHierarchy(combatUi, false);
             activeCombatUi = null;
@@ -2228,6 +2270,15 @@ namespace MonsterSanctuaryAspectRatioFix
              * health-bar alignment and remains in the foreground UI composite.
              */
             SetUiComponentLayer(buffInfoMenu.BuffInfo, true);
+            /*
+             * The centered native shade already covers the portion of the
+             * tooltip inside the 16:9 UI composite. While combat Buff Info is
+             * open, render only the exposed top/bottom shade bands through the
+             * same full-frame foreground presentation as the icons. This puts
+             * the shade above the bottom-anchored tooltip without changing the
+             * icon coordinate space or double-shading the center.
+             */
+            SetShadeBandsInCombatForeground(foreground);
             if (combatForegroundQuadRenderer != null)
             {
                 combatForegroundQuadRenderer.enabled = foreground;
@@ -2241,9 +2292,9 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
             /*
-             * Keep the normal combat skill/item tooltip visible. Temporarily
-             * draw the regular UI composite above the tooltip composite so the
-             * Buff Info panel wins only where the two presentations overlap.
+             * Draw the regular UI composite above the tooltip so the native
+             * center shade and Buff Info panel both win there. The foreground
+             * shade bands handle the tooltip area outside the centered UI.
              */
             SetCombatBuffInfoCompositePriority(true);
             SetBuffInfoIconForeground(buffInfoMenu, true);
@@ -2273,6 +2324,14 @@ namespace MonsterSanctuaryAspectRatioFix
             if (activeCombatUi?.BuffInfoMenu != null)
             {
                 SetBuffInfoIconForeground(activeCombatUi.BuffInfoMenu, false);
+            }
+            else
+            {
+                SetShadeBandsInCombatForeground(false);
+                if (combatForegroundQuadRenderer != null)
+                {
+                    combatForegroundQuadRenderer.enabled = false;
+                }
             }
         }
 
