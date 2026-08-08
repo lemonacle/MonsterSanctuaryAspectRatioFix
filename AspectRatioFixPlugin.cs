@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.11")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.15")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -33,7 +33,6 @@ namespace MonsterSanctuaryAspectRatioFix
         private Coroutine pendingApply;
         private Coroutine sceneRegistrationCoroutine;
         private Coroutine familiarSelectionLayoutCoroutine;
-        private Coroutine buffInfoUiShadeHideCoroutine;
         private Harmony harmony;
         private PixelCamera2D activePixelCamera;
         private Camera primaryCamera;
@@ -57,8 +56,10 @@ namespace MonsterSanctuaryAspectRatioFix
         private GameObject tooltipQuadObject;
         private MeshRenderer tooltipQuadRenderer;
         private Material tooltipQuadMaterial;
-        private GameObject buffInfoUiShadeObject;
-        private tk2dTiledSprite buffInfoUiShadeSprite;
+        private GameObject fullFrameShadeObject;
+        private tk2dTiledSprite fullFrameShadeSprite;
+        private GameObject fullFrameShadeBottomObject;
+        private tk2dTiledSprite fullFrameShadeBottomSprite;
         private readonly Dictionary<GameObject, int> originalLayers = new Dictionary<GameObject, int>();
         private readonly Dictionary<Camera, int> originalCameraMasks = new Dictionary<Camera, int>();
         private readonly Dictionary<Transform, float> originalHudLocalX = new Dictionary<Transform, float>();
@@ -128,7 +129,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.11 4:3 and 16:10 camera-policy plugin loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.15 4:3 and 16:10 camera-policy plugin loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -145,12 +146,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 StopCoroutine(sceneRegistrationCoroutine);
                 sceneRegistrationCoroutine = null;
             }
-            if (buffInfoUiShadeHideCoroutine != null)
-            {
-                StopCoroutine(buffInfoUiShadeHideCoroutine);
-                buffInfoUiShadeHideCoroutine = null;
-            }
-            DestroyBuffInfoUiShade();
+            DestroyFullFrameShade();
             harmony?.UnpatchSelf();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
@@ -186,6 +182,7 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipCameraTransform();
             UpdateUiQuadLayout();
             UpdateTooltipQuadLayout();
+            SyncFullFrameShade();
         }
 
         private void ScheduleApply()
@@ -263,7 +260,7 @@ namespace MonsterSanctuaryAspectRatioFix
             AssignKnownUiObjects();
             RegisterExistingKeepersIntros();
             AssignRegisteredKeepersIntros();
-            EnsureFullFrameEffectsUseWorldPresentation();
+            EnsureShadePresentation();
             ExcludeUiLayerFromOtherCameras();
             UpdateExplorationHudLayout();
             UpdateUiCameraTransform();
@@ -340,7 +337,7 @@ namespace MonsterSanctuaryAspectRatioFix
             TooltipCompositeActive = false;
             UiInputActive = false;
             SetCombatBuffInfoCompositePriority(false);
-            DestroyBuffInfoUiShade();
+            DestroyFullFrameShade();
             RestoreExplorationHudLayout();
             RestoreFamiliarSelectionLayouts();
             RestoreKeeperIntroLayouts();
@@ -640,7 +637,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void DestroyUiPipeline()
         {
-            DestroyBuffInfoUiShade();
+            DestroyFullFrameShade();
             UiCompositeActive = false;
             TooltipCompositeActive = false;
             UiInputActive = false;
@@ -909,7 +906,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 AssignUiComponent(uiController.TradeMenu);
                 AssignUiComponent(uiController.UpgradeMenu);
                 AssignUiComponent(uiController.MultiChoicePopup);
-                AssignUiComponent(uiController.BuffInfoOverlay);
+                AssignTooltipComponent(uiController.BuffInfoOverlay);
                 AssignUiComponent(uiController.NameMenu);
                 AssignUiComponent(uiController.ChampionChallenge);
                 AssignUiComponent(uiController.MonsterArmy);
@@ -925,7 +922,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 AssignUiComponent(uiController.CostumeMenu);
                 AssignUiComponent(uiController.NewGameMenu);
                 AssignNewGameDescriptionPresentation(uiController.NewGameMenu);
-                EnsureFullFrameEffectsUseWorldPresentation();
+                EnsureShadePresentation();
             }
             SaveGameMenu[] saveMenus = Resources.FindObjectsOfTypeAll<SaveGameMenu>();
             foreach (SaveGameMenu saveMenu in saveMenus)
@@ -1023,9 +1020,9 @@ namespace MonsterSanctuaryAspectRatioFix
             UpdateTooltipQuadLayout();
         }
 
-        private void EnsureBuffInfoUiShade()
+        private void EnsureFullFrameShade()
         {
-            if (!CropActive || !UiCompositeActive || uiLayer < 0 || buffInfoUiShadeObject != null)
+            if (!CropActive || fullFrameShadeObject != null)
             {
                 return;
             }
@@ -1035,98 +1032,108 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            buffInfoUiShadeObject = UnityEngine.Object.Instantiate(sourceShade.gameObject);
-            buffInfoUiShadeObject.name = "AspectRatioFix Buff Info UI Shade";
-            buffInfoUiShadeObject.transform.SetParent(sourceShade.transform.parent, worldPositionStays: true);
-            ShadeLayer clonedShade = buffInfoUiShadeObject.GetComponent<ShadeLayer>();
+            fullFrameShadeObject = UnityEngine.Object.Instantiate(sourceShade.gameObject);
+            fullFrameShadeObject.name = "AspectRatioFix Full Frame Shade";
+            fullFrameShadeObject.transform.SetParent(sourceShade.transform.parent, worldPositionStays: true);
+            ShadeLayer clonedShade = fullFrameShadeObject.GetComponent<ShadeLayer>();
             if (clonedShade != null)
             {
-                buffInfoUiShadeSprite = clonedShade.layer;
+                fullFrameShadeSprite = clonedShade.layer;
                 clonedShade.enabled = false;
             }
-            if (buffInfoUiShadeSprite == null)
+            if (fullFrameShadeSprite == null)
             {
-                buffInfoUiShadeSprite = buffInfoUiShadeObject.GetComponentInChildren<tk2dTiledSprite>(true);
+                fullFrameShadeSprite = fullFrameShadeObject.GetComponentInChildren<tk2dTiledSprite>(true);
             }
-            foreach (ColorTween tween in buffInfoUiShadeObject.GetComponentsInChildren<ColorTween>(true))
+            foreach (ColorTween tween in fullFrameShadeObject.GetComponentsInChildren<ColorTween>(true))
             {
                 if (tween != null)
                 {
                     tween.enabled = false;
                 }
             }
-            SetLayerRecursively(buffInfoUiShadeObject, uiLayer);
-            buffInfoUiShadeObject.SetActive(false);
-            ExcludeUiLayerFromOtherCameras();
+            // Keep the backing shade on its original world-presentation layer.
+            // The native shade itself is assigned to the UI composite below.
+            fullFrameShadeObject.SetActive(true);
+
+            fullFrameShadeBottomObject = UnityEngine.Object.Instantiate(fullFrameShadeObject);
+            fullFrameShadeBottomObject.name = "AspectRatioFix Bottom Frame Shade";
+            fullFrameShadeBottomSprite = fullFrameShadeBottomObject.GetComponentInChildren<tk2dTiledSprite>(true);
+            fullFrameShadeBottomObject.SetActive(true);
         }
 
-        private void ShowBuffInfoUiShade(BuffInfoOverlay overlay)
+        private void SyncFullFrameShade()
         {
-            if (!CropActive || overlay == null)
+            if (!CropActive)
             {
                 return;
             }
-            EnsureUiPipeline();
-            EnsureBuffInfoUiShade();
+            EnsureFullFrameShade();
             UIController uiController = UIController.Instance;
             ShadeLayer sourceShade = uiController != null ? uiController.ShadeLayer : null;
-            if (buffInfoUiShadeObject == null || buffInfoUiShadeSprite == null ||
+            if (fullFrameShadeObject == null || fullFrameShadeSprite == null ||
                 sourceShade == null || sourceShade.layer == null)
             {
                 return;
             }
-            if (buffInfoUiShadeHideCoroutine != null)
-            {
-                StopCoroutine(buffInfoUiShadeHideCoroutine);
-                buffInfoUiShadeHideCoroutine = null;
-            }
-            buffInfoUiShadeObject.transform.localPosition = sourceShade.transform.localPosition;
-            buffInfoUiShadeObject.transform.localRotation = sourceShade.transform.localRotation;
-            buffInfoUiShadeObject.transform.localScale = sourceShade.transform.localScale;
-            buffInfoUiShadeSprite.dimensions = sourceShade.layer.dimensions;
-            buffInfoUiShadeObject.SetActive(true);
-            ColorTween.EndTween(buffInfoUiShadeSprite.gameObject, recursive: false);
-            Color transparent = new Color(0f, 0f, 0f, 0f);
-            Color shaded = new Color(0f, 0f, 0f, sourceShade.transparency);
-            buffInfoUiShadeSprite.color = transparent;
-            ColorTween.StartTween(buffInfoUiShadeSprite.gameObject, transparent, shaded, 0.1f);
-        }
+            fullFrameShadeObject.transform.localPosition = sourceShade.transform.localPosition;
+            fullFrameShadeObject.transform.localRotation = sourceShade.transform.localRotation;
+            fullFrameShadeObject.transform.localScale = sourceShade.transform.localScale;
+            fullFrameShadeSprite.dimensions = sourceShade.layer.dimensions;
+            fullFrameShadeSprite.color = sourceShade.layer.color;
 
-        private void HideBuffInfoUiShade()
-        {
-            if (buffInfoUiShadeObject == null || buffInfoUiShadeSprite == null ||
-                !buffInfoUiShadeObject.activeSelf)
+            if (fullFrameShadeBottomObject == null || fullFrameShadeBottomSprite == null)
             {
                 return;
             }
-            if (buffInfoUiShadeHideCoroutine != null)
-            {
-                StopCoroutine(buffInfoUiShadeHideCoroutine);
-            }
-            Color current = buffInfoUiShadeSprite.color;
-            ColorTween.EndTween(buffInfoUiShadeSprite.gameObject, recursive: false);
-            ColorTween.StartTween(buffInfoUiShadeSprite.gameObject, current, new Color(0f, 0f, 0f, 0f), 0.1f);
-            buffInfoUiShadeHideCoroutine = StartCoroutine(DisableBuffInfoUiShadeAfterFade());
+
+            /*
+             * The native shade already darkens the centered 16:9 UI frame.
+             * These two copies fill only the exposed top and bottom bands;
+             * allowing either copy to overlap the UI frame would apply the
+             * shade opacity twice.
+             */
+            float screenAspect = Screen.height > 0 ? Screen.width / (float)Screen.height : UiAspect;
+            float uiHeightRatio = screenAspect < UiAspect ? screenAspect / UiAspect : 1f;
+            float bandRatio = Mathf.Max(0f, (1f - uiHeightRatio) * 0.5f);
+            Vector3 sourceScale = sourceShade.transform.localScale;
+            Vector3 sourcePosition = sourceShade.transform.localPosition;
+            float sourceHeight = sourceShade.layer.GetBounds().size.y * Mathf.Abs(sourceScale.y);
+            float bandCenterOffset = sourceHeight * (0.5f - bandRatio * 0.5f);
+
+            Vector3 bandScale = sourceScale;
+            bandScale.y *= bandRatio;
+            fullFrameShadeObject.transform.localScale = bandScale;
+            fullFrameShadeBottomObject.transform.SetParent(sourceShade.transform.parent, worldPositionStays: false);
+            fullFrameShadeBottomObject.transform.localRotation = sourceShade.transform.localRotation;
+            fullFrameShadeBottomObject.transform.localScale = bandScale;
+
+            Vector3 topPosition = sourcePosition;
+            topPosition.y += bandCenterOffset;
+            fullFrameShadeObject.transform.localPosition = topPosition;
+            Vector3 bottomPosition = sourcePosition;
+            bottomPosition.y -= bandCenterOffset;
+            fullFrameShadeBottomObject.transform.localPosition = bottomPosition;
+            fullFrameShadeBottomSprite.dimensions = sourceShade.layer.dimensions;
+            fullFrameShadeBottomSprite.color = sourceShade.layer.color;
+            fullFrameShadeObject.SetActive(bandRatio > 0f);
+            fullFrameShadeBottomObject.SetActive(bandRatio > 0f);
         }
 
-        private IEnumerator DisableBuffInfoUiShadeAfterFade()
+        private void DestroyFullFrameShade()
         {
-            yield return new WaitForSecondsRealtime(0.12f);
-            buffInfoUiShadeHideCoroutine = null;
-            if (buffInfoUiShadeObject != null)
+            if (fullFrameShadeObject != null)
             {
-                buffInfoUiShadeObject.SetActive(false);
+                UnityEngine.Object.Destroy(fullFrameShadeObject);
+                fullFrameShadeObject = null;
             }
-        }
-
-        private void DestroyBuffInfoUiShade()
-        {
-            if (buffInfoUiShadeObject != null)
+            if (fullFrameShadeBottomObject != null)
             {
-                UnityEngine.Object.Destroy(buffInfoUiShadeObject);
-                buffInfoUiShadeObject = null;
+                UnityEngine.Object.Destroy(fullFrameShadeBottomObject);
+                fullFrameShadeBottomObject = null;
             }
-            buffInfoUiShadeSprite = null;
+            fullFrameShadeSprite = null;
+            fullFrameShadeBottomSprite = null;
         }
 
         private void RestoreMultiChoiceDescriptionPresentation(MultiChoicePopup popup)
@@ -1193,6 +1200,41 @@ namespace MonsterSanctuaryAspectRatioFix
             if (TryGetPresentationLayer(overlay.BuffInfoRoot, out targetLayer))
             {
                 SetLayerRecursively(buffInfo.gameObject, targetLayer);
+            }
+        }
+
+        private void OnBuffInfoOverlayOpened(BuffInfoOverlay overlay)
+        {
+            if (!CropActive || overlay == null)
+            {
+                return;
+            }
+            EnsureUiPipeline();
+            AssignTooltipComponent(overlay);
+            ExcludeUiLayerFromOtherCameras();
+            UpdateTooltipCameraTransform();
+            UpdateTooltipQuadLayout();
+        }
+
+        private void ShowMissingModalShade(GameObject target)
+        {
+            UIController uiController = UIController.Instance;
+            if (target != null && uiController != null && uiController.ShadeLayer != null)
+            {
+                uiController.ShadeLayer.Show(target);
+                if (CropActive)
+                {
+                    EnsureShadePresentation();
+                }
+            }
+        }
+
+        private void HideMissingModalShade(GameObject target)
+        {
+            UIController uiController = UIController.Instance;
+            if (target != null && uiController != null && uiController.ShadeLayer != null)
+            {
+                uiController.ShadeLayer.Hide(target);
             }
         }
 
@@ -2011,16 +2053,16 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             /*
              * BuffInfoMenu positions its icon list from the combat health
-             * bars' world positions. Keep that MenuList, its selection
-             * view, and its generated icon items on their original combat
-             * layers while the descriptive BuffInfo panel remains in the
-             * centered menu presentation.
+             * bars' world positions, but changing its render layer does not
+             * change those world transforms. Put the list, selection view,
+             * and generated icons in the UI composite so their authored Z
+             * positions can place them above the active shade.
              */
-            SetMenuListGraph(buffInfoMenu.MenuList, new HashSet<int>(), false);
+            SetMenuListGraph(buffInfoMenu.MenuList, new HashSet<int>(), true);
             /*
              * Some scene hierarchies place the descriptive BuffInfo panel
              * beneath the MenuList root. Re-apply the UI layer afterward so
-             * only the health-bar-aligned icons return to world presentation.
+             * both portions remain in the same native depth space.
              */
             SetUiComponentLayer(buffInfoMenu.BuffInfo, true);
         }
@@ -2503,7 +2545,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RestoreSkipPromptLayout();
         }
 
-        private void EnsureFullFrameEffectsUseWorldPresentation()
+        private void EnsureShadePresentation()
         {
             UIController uiController = UIController.Instance;
             if (uiController == null)
@@ -2516,7 +2558,15 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             if (uiController.ShadeLayer != null)
             {
-                RestoreOriginalLayersRecursively(uiController.ShadeLayer.gameObject);
+                /*
+                 * Preserve the native shade in the UI render so its authored
+                 * Z position can remain between nested menus. A synchronized
+                 * copy on the original layer shades the world and the exposed
+                 * bands outside the centered 16:9 UI composite.
+                 */
+                EnsureFullFrameShade();
+                AssignUiComponent(uiController.ShadeLayer);
+                SyncFullFrameShade();
             }
             if (uiController.Dialogue != null && uiController.Dialogue.NarrationBackground != null)
             {
@@ -2994,22 +3044,12 @@ namespace MonsterSanctuaryAspectRatioFix
         }
 
         [HarmonyPatch(typeof(BuffInfoOverlay), "Open")]
-        private static class BuffInfoOverlayOpenShadePatch
+        private static class BuffInfoOverlayOpenPresentationPatch
         {
 
             private static void Postfix(BuffInfoOverlay __instance)
             {
-                Instance?.ShowBuffInfoUiShade(__instance);
-            }
-        }
-
-        [HarmonyPatch(typeof(BuffInfoOverlay), "Close")]
-        private static class BuffInfoOverlayCloseShadePatch
-        {
-
-            private static void Postfix()
-            {
-                Instance?.HideBuffInfoUiShade();
+                Instance?.OnBuffInfoOverlayOpened(__instance);
             }
         }
 
@@ -3020,6 +3060,60 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix(BuffInfoOverlay __instance, BuffInfo __result)
             {
                 Instance?.RefreshBuffInfoPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(SaveGameMenu), nameof(SaveGameMenu.Open))]
+        private static class SaveGameMenuShadeOpenPatch
+        {
+            private static void Postfix(SaveGameMenu __instance)
+            {
+                Instance?.ShowMissingModalShade(__instance.gameObject);
+            }
+        }
+
+        [HarmonyPatch(typeof(SaveGameMenu), "Close")]
+        private static class SaveGameMenuShadeClosePatch
+        {
+            private static void Postfix(SaveGameMenu __instance)
+            {
+                Instance?.HideMissingModalShade(__instance.gameObject);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterTeamMenu), nameof(MonsterTeamMenu.Open))]
+        private static class MonsterTeamMenuShadeOpenPatch
+        {
+            private static void Postfix(MonsterTeamMenu __instance)
+            {
+                Instance?.ShowMissingModalShade(__instance.gameObject);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterTeamMenu), "Close")]
+        private static class MonsterTeamMenuShadeClosePatch
+        {
+            private static void Postfix(MonsterTeamMenu __instance)
+            {
+                Instance?.HideMissingModalShade(__instance.gameObject);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterMenu), nameof(MonsterMenu.Open))]
+        private static class MonsterQuickMenuShadeOpenPatch
+        {
+            private static void Postfix(MonsterMenu __instance)
+            {
+                Instance?.ShowMissingModalShade(__instance.gameObject);
+            }
+        }
+
+        [HarmonyPatch(typeof(MonsterMenu), nameof(MonsterMenu.Close))]
+        private static class MonsterQuickMenuShadeClosePatch
+        {
+            private static void Postfix(MonsterMenu __instance)
+            {
+                Instance?.HideMissingModalShade(__instance.gameObject);
             }
         }
 
