@@ -150,8 +150,8 @@ namespace MonsterSanctuaryAspectRatioFix
         private readonly Dictionary<Transform, Vector3> originalSkipPromptLocalPositions = new Dictionary<Transform, Vector3>();
         private Coroutine skipPromptAnchorCoroutine;
         /*
-         * Familiar-choice layout is captured and centered once when
-         * the intro initializes, before the selection menu opens.
+         * Familiar-choice layout is captured and centered once after
+         * the selection menu completes its initial layout.
          */
         private readonly List<KeepersIntro> registeredKeepersIntros = new List<KeepersIntro>();
         private readonly Dictionary<Transform, Vector3> originalFamiliarSelectionLocalPositions =
@@ -2193,8 +2193,8 @@ namespace MonsterSanctuaryAspectRatioFix
             /*
              * Wait for the initial familiar buttons and text meshes to finish
              * their first layout pass. Center the authored menu and information
-             * panel before the menu becomes interactive so the row does not jump
-             * when the selection controls appear.
+             * panel using those final bounds. Depending on frame timing, the
+             * authored position may be briefly visible before this correction.
              */
             yield return null;
             yield return new WaitForEndOfFrame();
@@ -4192,7 +4192,7 @@ namespace MonsterSanctuaryAspectRatioFix
         }
 
         [HarmonyPatch(typeof(TitleAnimation), "Start")]
-        private static class TitleAnimationFitPatch
+        private static class TitleAnimationPresentationPatch
         {
 
             private static void Postfix(TitleAnimation __instance)
