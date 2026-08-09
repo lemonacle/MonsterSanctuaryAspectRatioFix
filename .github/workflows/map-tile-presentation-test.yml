@@ -1,0 +1,30 @@
+name: Map Tile Presentation Test Build
+
+on:
+  push:
+    branches:
+      - test/map-tile-presentation-2.1.30
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore .\test\MapTilePresentationTest\MapTilePresentationTest.csproj
+
+      - name: Build
+        run: dotnet build .\test\MapTilePresentationTest\MapTilePresentationTest.csproj -c Release --no-restore
+
+      - name: Upload test DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: MapTilePresentationTest
+          path: test\MapTilePresentationTest\bin\Release\net48\lemonacle.MonsterSanctuary.MapTilePresentationTest.dll
+          if-no-files-found: error
