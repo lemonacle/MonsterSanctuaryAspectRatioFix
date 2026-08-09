@@ -6,8 +6,11 @@ on:
       - test/map-tile-presentation-2.1.30
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-and-attach:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +25,41 @@ jobs:
       - name: Build
         run: dotnet build .\test\MapTilePresentationTest\MapTilePresentationTest.csproj -c Release --no-restore
 
-      - name: Upload test DLL
+      - name: Upload test DLL artifact
         uses: actions/upload-artifact@v4
         with:
           name: MapTilePresentationTest
           path: test\MapTilePresentationTest\bin\Release\net48\lemonacle.MonsterSanctuary.MapTilePresentationTest.dll
           if-no-files-found: error
+
+      - name: Add companion DLL to v2.1.29 pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dll = "test\MapTilePresentationTest\bin\Release\net48\lemonacle.MonsterSanctuary.MapTilePresentationTest.dll"
+          gh release upload 2.1.29 $dll --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Add map-tile testing note to v2.1.29 pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $body = gh release view 2.1.29 --repo $env:GITHUB_REPOSITORY --json body --jq .body
+          $marker = "## Map tile companion fix (testing)"
+          if ($body -notmatch [regex]::Escape($marker)) {
+            $note = @"
+
+          ## Map tile companion fix (testing)
+
+          A newly identified 4:3 Map issue can cause newly explored map chunks to render behind the menu shade and pan at the wrong apparent rate on the first Map opening. A companion plugin, `lemonacle.MonsterSanctuary.MapTilePresentationTest.dll`, is attached to this pre-release for continued validation.
+
+          - Install it alongside the normal v2.1.29 Aspect Ratio Fix DLL in `BepInEx/plugins`; it does not replace the main plugin.
+          - The companion patch reassigns dynamically created `MinimapTileView` objects to the expanded UI presentation layer immediately after `MapMenu.InitMapTiles()`.
+          - Initial RG405M testing passed at 4:3, including exploration across multiple chunks/rooms and a 4:3 → 16:9 → 4:3 resolution-switch regression test.
+          - Continued testing is welcome before this fix is folded into the main plugin. Remove the companion DLL once a later main-plugin build includes the fix.
+          "@
+            $body += $note
+          }
+          Set-Content -Path release-body.md -Value $body -Encoding UTF8
+          gh release edit 2.1.29 --repo $env:GITHUB_REPOSITORY --notes-file release-body.md
