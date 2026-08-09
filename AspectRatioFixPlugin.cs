@@ -143,7 +143,6 @@ namespace MonsterSanctuaryAspectRatioFix
         private CombatUIController activeCombatUi;
         private readonly Dictionary<Transform, Vector3> originalVictoryBannerLocalPositions =
             new Dictionary<Transform, Vector3>();
-        private bool suppressTooltipCompositeForCombatBuffInfo;
         /*
          * Skip prompts are anchored only when shown. Their renderer
          * bounds are not recalculated during normal gameplay.
@@ -596,7 +595,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             if (tooltipQuadRenderer != null)
             {
-                tooltipQuadRenderer.enabled = !suppressTooltipCompositeForCombatBuffInfo;
+                tooltipQuadRenderer.enabled = true;
             }
             UiCompositeActive = uiRenderCamera != null && uiQuadRenderer != null;
             TooltipCompositeActive = tooltipRenderCamera != null && tooltipQuadRenderer != null;
@@ -1883,8 +1882,6 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void SetCombatBuffInfoCompositePriority(bool buffInfoOnTop)
         {
-            suppressTooltipCompositeForCombatBuffInfo = false;
-            ApplyTooltipCompositeVisibility();
             if (uiQuadMaterial != null)
             {
                 uiQuadMaterial.renderQueue = buffInfoOnTop ? 4001 : 4000;
@@ -2859,14 +2856,6 @@ namespace MonsterSanctuaryAspectRatioFix
                 {
                     combatForegroundQuadRenderer.enabled = false;
                 }
-            }
-        }
-
-        private void ApplyTooltipCompositeVisibility()
-        {
-            if (tooltipQuadRenderer != null)
-            {
-                tooltipQuadRenderer.enabled = !suppressTooltipCompositeForCombatBuffInfo;
             }
         }
 
