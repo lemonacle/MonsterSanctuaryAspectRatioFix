@@ -4,6 +4,8 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 
 **Current release: v2.1.27**
 
+**Current development version: v2.1.29**
+
 ## Features
 
 - Supports centered 4:3 gameplay using a 360×270 visible world area.
@@ -17,17 +19,17 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 - Supports switching between compatible resolutions during the same session.
 - Applies menu and dynamically generated UI corrections through lifecycle events rather than continuous menu polling.
 
-## v2.1.27 highlights
+## Current development highlights
 
 - Completes the 4:3 presentation pass with no remaining visual artifacts found during testing.
 - Uses a pixel-preserving expanded UI canvas so menus retain their original scale and proportions.
 - Extends the native menu shade across the complete frame without duplicated bands or visible seams.
 - Preserves full-frame main-menu and scene-transition fades.
 - Expands the Map backing, anchors its controls and arrows to the added vertical space, and preserves native scrolling behavior.
+- Adds extra Map-background overscan for clean edge coverage under Proton and GameNative scaling.
 - Expands the Following Monster, catalyst evolution, Switch Shift, and Select Shift backgrounds across the complete canvas.
 - Keeps combat Buff Info icons aligned with health bars while rendering them above the shade and combat menus.
 - Corrects Skills, Inventory, Feed, and Consumables tooltip presentation during monster switching.
-- Retains targeted diagnostic logging for the upcoming cleanup and refactoring pass.
 
 ## Requirements
 
@@ -145,7 +147,6 @@ Other aspect ratios are currently left unchanged.
 
 - The familiar-selection screen may briefly begin at its original position before centering as its interactive elements appear.
 - 16:10 uses the same presentation system as 4:3, but has not yet received the same exhaustive regression pass.
-- Targeted selector, Shift-background, and shade diagnostics remain enabled to support the upcoming cleanup and refactoring pass.
 
 ## Roadmap
 
@@ -156,8 +157,7 @@ The following items are planned for future updates. They are priorities rather t
 - Replace remaining per-frame presentation refreshes with event-driven or dirty-flag updates where safe.
 - Remove obsolete compatibility and tooltip-suppression code left behind by earlier implementations.
 - Prune destroyed Unity objects from cached layer, camera, and position collections after scene changes.
-- Centralize UI shade teardown, version constants, and other repeated lifecycle handling.
-- Review development-only behavior such as the manual F8 refresh before the next release.
+- Centralize remaining UI teardown and repeated lifecycle handling.
 - Consider splitting the large plugin source into smaller partial-class files without changing runtime behavior.
 
 ### Testing and compatibility

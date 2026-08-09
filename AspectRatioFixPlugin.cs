@@ -8,7 +8,14 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.29")]
+    internal static class PluginMetadata
+    {
+        internal const string Id = "lemonacle.MonsterSanctuary.AspectRatioFix";
+        internal const string Name = "Aspect Ratio Fix";
+        internal const string Version = "2.1.29";
+    }
+
+    [BepInPlugin(PluginMetadata.Id, PluginMetadata.Name, PluginMetadata.Version)]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -156,8 +163,8 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.29 Map background overscan patch loaded.");
-            harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
+            Logger.LogInfo($"{PluginMetadata.Name} {PluginMetadata.Version} loaded.");
+            harmony = new Harmony(PluginMetadata.Id);
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
             previousScreenHeight = Screen.height;
@@ -198,10 +205,6 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 previousScreenWidth = Screen.width;
                 previousScreenHeight = Screen.height;
-                ScheduleApply();
-            }
-            if (Input.GetKeyDown(KeyCode.F8))
-            {
                 ScheduleApply();
             }
             if (!CropActive)
@@ -1332,35 +1335,14 @@ namespace MonsterSanctuaryAspectRatioFix
                 originalShadeDimensionsCaptured = true;
             }
             Vector2 targetDimensions = new Vector2(OriginalWidth, UiCanvasHeight);
-            if ((shadeSprite.dimensions - targetDimensions).sqrMagnitude < 0.001f)
-            {
-                return;
-            }
-            Renderer renderer = shadeSprite.GetComponent<Renderer>();
-            Vector3 originalCenter = renderer != null ? renderer.bounds.center : shadeSprite.transform.position;
-            shadeSprite.dimensions = targetDimensions;
-            PositionSpriteBoundsCenter(shadeSprite, originalCenter);
-        }
-
-        private static void PositionSpriteBoundsCenter(tk2dTiledSprite sprite, Vector3 targetCenter)
-        {
-            Renderer renderer = sprite != null ? sprite.GetComponent<Renderer>() : null;
-            if (renderer != null)
-            {
-                sprite.transform.position += targetCenter - renderer.bounds.center;
-            }
+            ResizeSpritePreservingCenter(shadeSprite, targetDimensions);
         }
 
         private void RestoreNativeShadeDimensions()
         {
             if (expandedShadeSprite != null && originalShadeDimensionsCaptured)
             {
-                Renderer renderer = expandedShadeSprite.GetComponent<Renderer>();
-                Vector3 originalCenter = renderer != null
-                    ? renderer.bounds.center
-                    : expandedShadeSprite.transform.position;
-                expandedShadeSprite.dimensions = originalShadeDimensions;
-                PositionSpriteBoundsCenter(expandedShadeSprite, originalCenter);
+                ResizeSpritePreservingCenter(expandedShadeSprite, originalShadeDimensions);
             }
             expandedShadeSprite = null;
             originalShadeDimensions = Vector2.zero;
@@ -1389,8 +1371,6 @@ namespace MonsterSanctuaryAspectRatioFix
                 originalMonsterSelectorBackgroundDimensionsCaptured = true;
             }
 
-            LogMonsterSelectorBackgroundState("before coverage", selector, background);
-
             /* Preserve the renderer's visual center while resizing. Some
              * tk2d tiled-sprite anchor configurations grow the mesh in one
              * direction even when the transform itself remains stationary.
@@ -1399,45 +1379,13 @@ namespace MonsterSanctuaryAspectRatioFix
             Vector2 targetDimensions = new Vector2(
                 originalMonsterSelectorBackgroundDimensions.x,
                 originalMonsterSelectorBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
-            if ((background.dimensions - targetDimensions).sqrMagnitude >= 0.001f)
+            if (ResizeSpritePreservingCenter(background, targetDimensions))
             {
-                Renderer renderer = background.GetComponent<Renderer>();
-                Vector3 originalCenter = renderer != null
-                    ? renderer.bounds.center
-                    : background.transform.position;
-                background.dimensions = targetDimensions;
-                PositionSpriteBoundsCenter(background, originalCenter);
                 Logger.LogInfo($"Expanded Monster Selector background from " +
                     $"{originalMonsterSelectorBackgroundDimensions.x:0}x" +
                     $"{originalMonsterSelectorBackgroundDimensions.y:0} to " +
                     $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
             }
-            LogMonsterSelectorBackgroundState("after coverage", selector, background);
-        }
-
-        private void LogMonsterSelectorBackgroundState(string stage, MonsterSelector selector, tk2dTiledSprite background)
-        {
-            Renderer renderer = background != null ? background.GetComponent<Renderer>() : null;
-            string boundsText = renderer != null
-                ? $"boundsCenter={renderer.bounds.center}, boundsSize={renderer.bounds.size}"
-                : "bounds=<missing>";
-            string viewportText = "uiViewport=<missing>";
-            if (renderer != null && uiRenderCamera != null)
-            {
-                Vector3 viewportMin = uiRenderCamera.WorldToViewportPoint(renderer.bounds.min);
-                Vector3 viewportMax = uiRenderCamera.WorldToViewportPoint(renderer.bounds.max);
-                viewportText = $"uiViewportMin={viewportMin}, uiViewportMax={viewportMax}";
-            }
-            Logger.LogInfo($"Monster Selector diagnostic [{stage}]: " +
-                $"path='{GetTransformPath(background != null ? background.transform : null, selector != null ? selector.transform : null)}', " +
-                $"sameTransform={selector != null && background != null && selector.transform == background.transform}, " +
-                $"activeSelf={background != null && background.gameObject.activeSelf}, activeInHierarchy={background != null && background.gameObject.activeInHierarchy}, " +
-                $"layer={(background != null ? background.gameObject.layer : -1)}, anchor={(background != null ? background.anchor.ToString() : "<missing>")}, " +
-                $"dimensions={(background != null ? background.dimensions.ToString() : "<missing>")}, " +
-                $"localPosition={(background != null ? background.transform.localPosition.ToString() : "<missing>")}, " +
-                $"worldPosition={(background != null ? background.transform.position.ToString() : "<missing>")}, " +
-                $"lossyScale={(background != null ? background.transform.lossyScale.ToString() : "<missing>")}, " +
-                boundsText + ", " + viewportText + ".");
         }
 
         private void RestoreMonsterSelectorBackgroundDimensions()
@@ -1445,12 +1393,9 @@ namespace MonsterSanctuaryAspectRatioFix
             if (expandedMonsterSelectorBackground != null &&
                 originalMonsterSelectorBackgroundDimensionsCaptured)
             {
-                Renderer renderer = expandedMonsterSelectorBackground.GetComponent<Renderer>();
-                Vector3 originalCenter = renderer != null
-                    ? renderer.bounds.center
-                    : expandedMonsterSelectorBackground.transform.position;
-                expandedMonsterSelectorBackground.dimensions = originalMonsterSelectorBackgroundDimensions;
-                PositionSpriteBoundsCenter(expandedMonsterSelectorBackground, originalCenter);
+                ResizeSpritePreservingCenter(
+                    expandedMonsterSelectorBackground,
+                    originalMonsterSelectorBackgroundDimensions);
             }
             expandedMonsterSelectorBackground = null;
             originalMonsterSelectorBackgroundDimensions = Vector2.zero;
@@ -1464,9 +1409,6 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
 
-            Transform openingRoot = shiftMenu.MenuList != null && shiftMenu.MenuList.RootElement != null
-                ? shiftMenu.MenuList.RootElement.transform
-                : null;
             tk2dBaseSprite bestCandidate = null;
             float bestArea = 0f;
             foreach (tk2dBaseSprite sprite in shiftMenu.GetComponentsInChildren<tk2dBaseSprite>(true))
@@ -1482,18 +1424,6 @@ namespace MonsterSanctuaryAspectRatioFix
                 }
                 float width = Mathf.Abs(dimensions.x);
                 float height = Mathf.Abs(dimensions.y);
-                Renderer renderer = sprite.GetComponent<Renderer>();
-                bool insideOpeningRoot = openingRoot != null &&
-                    (sprite.transform == openingRoot || sprite.transform.IsChildOf(openingRoot));
-                if (width >= 100f || height >= 100f)
-                {
-                    Logger.LogInfo($"Monster Shift sprite candidate: " +
-                        $"path='{GetTransformPath(sprite.transform, shiftMenu.transform)}', " +
-                        $"type={sprite.GetType().Name}, dimensions={dimensions}, " +
-                        $"insideOpeningRoot={insideOpeningRoot}, anchor={GetResizableSpriteAnchor(sprite)}, " +
-                        $"color={sprite.color}, activeSelf={sprite.gameObject.activeSelf}, " +
-                        $"boundsSize={(renderer != null ? renderer.bounds.size.ToString() : "<missing>")}.");
-                }
                 if (width < OriginalWidth * 0.75f || height < OriginalHeight * 0.75f)
                 {
                     continue;
@@ -1508,7 +1438,6 @@ namespace MonsterSanctuaryAspectRatioFix
 
             if (bestCandidate == null)
             {
-                LogMonsterShiftShadeState("no full-frame Shift child found");
                 Logger.LogWarning("Aspect Ratio Fix could not locate a resizable full-frame sprite under MonsterShiftMenu.");
                 return;
             }
@@ -1524,27 +1453,16 @@ namespace MonsterSanctuaryAspectRatioFix
             Vector2 targetDimensions = new Vector2(
                 originalMonsterShiftBackgroundDimensions.x,
                 originalMonsterShiftBackgroundDimensions.y + UiCanvasHeight - OriginalHeight);
-            Vector2 currentDimensions;
-            if (!TryGetResizableSpriteDimensions(bestCandidate, out currentDimensions) ||
-                (currentDimensions - targetDimensions).sqrMagnitude < 0.001f)
+            if (!ResizeSpritePreservingCenter(bestCandidate, targetDimensions))
             {
-                LogMonsterShiftShadeState("Shift child already covered");
                 return;
             }
-
-            Renderer candidateRenderer = bestCandidate.GetComponent<Renderer>();
-            Vector3 originalCenter = candidateRenderer != null
-                ? candidateRenderer.bounds.center
-                : bestCandidate.transform.position;
-            SetResizableSpriteDimensions(bestCandidate, targetDimensions);
-            PositionSpriteBoundsCenter(bestCandidate, originalCenter);
             Logger.LogInfo($"Expanded Monster Shift background " +
                 $"'{GetTransformPath(bestCandidate.transform, shiftMenu.transform)}' " +
                 $"({bestCandidate.GetType().Name}) from " +
                 $"{originalMonsterShiftBackgroundDimensions.x:0}x" +
                 $"{originalMonsterShiftBackgroundDimensions.y:0} to " +
                 $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
-            LogMonsterShiftShadeState("after Shift child coverage");
         }
 
         private static bool TryGetResizableSpriteDimensions(tk2dBaseSprite sprite, out Vector2 dimensions)
@@ -1563,17 +1481,6 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             dimensions = Vector2.zero;
             return false;
-        }
-
-        private static string GetResizableSpriteAnchor(tk2dBaseSprite sprite)
-        {
-            tk2dTiledSprite tiled = sprite as tk2dTiledSprite;
-            if (tiled != null)
-            {
-                return tiled.anchor.ToString();
-            }
-            tk2dSlicedSprite sliced = sprite as tk2dSlicedSprite;
-            return sliced != null ? sliced.anchor.ToString() : "<not resizable>";
         }
 
         private static void SetResizableSpriteDimensions(tk2dBaseSprite sprite, Vector2 dimensions)
@@ -1600,30 +1507,29 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
-        private void LogMonsterShiftShadeState(string stage)
+        private static bool ResizeSpritePreservingCenter(tk2dBaseSprite sprite, Vector2 targetDimensions)
         {
-            UIController controller = UIController.Instance;
-            tk2dTiledSprite shade = controller != null && controller.ShadeLayer != null
-                ? controller.ShadeLayer.layer
-                : null;
-            Renderer renderer = shade != null ? shade.GetComponent<Renderer>() : null;
-            Logger.LogInfo($"Monster Shift shade diagnostic [{stage}]: " +
-                $"dimensions={(shade != null ? shade.dimensions.ToString() : "<missing>")}, " +
-                $"anchor={(shade != null ? shade.anchor.ToString() : "<missing>")}, " +
-                $"color={(shade != null ? shade.color.ToString() : "<missing>")}, " +
-                $"boundsSize={(renderer != null ? renderer.bounds.size.ToString() : "<missing>")}.");
+            Vector2 currentDimensions;
+            if (!TryGetResizableSpriteDimensions(sprite, out currentDimensions) ||
+                (currentDimensions - targetDimensions).sqrMagnitude < 0.001f)
+            {
+                return false;
+            }
+
+            Renderer renderer = sprite.GetComponent<Renderer>();
+            Vector3 originalCenter = renderer != null ? renderer.bounds.center : sprite.transform.position;
+            SetResizableSpriteDimensions(sprite, targetDimensions);
+            PositionSpriteBoundsCenter(sprite, originalCenter);
+            return true;
         }
 
         private void RestoreMonsterShiftBackgroundDimensions()
         {
             if (expandedMonsterShiftBackground != null && originalMonsterShiftBackgroundDimensionsCaptured)
             {
-                Renderer renderer = expandedMonsterShiftBackground.GetComponent<Renderer>();
-                Vector3 originalCenter = renderer != null
-                    ? renderer.bounds.center
-                    : expandedMonsterShiftBackground.transform.position;
-                SetResizableSpriteDimensions(expandedMonsterShiftBackground, originalMonsterShiftBackgroundDimensions);
-                PositionSpriteBoundsCenter(expandedMonsterShiftBackground, originalCenter);
+                ResizeSpritePreservingCenter(
+                    expandedMonsterShiftBackground,
+                    originalMonsterShiftBackgroundDimensions);
             }
             expandedMonsterShiftBackground = null;
             originalMonsterShiftBackgroundDimensions = Vector2.zero;
@@ -1675,14 +1581,10 @@ namespace MonsterSanctuaryAspectRatioFix
                 originalMapBackgroundDimensions.x,
                 originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight +
                     MapBackgroundOverscanPerEdge * 2f);
-            if ((background.dimensions - targetDimensions).sqrMagnitude < 0.001f)
+            if (!ResizeSpritePreservingCenter(background, targetDimensions))
             {
                 return;
             }
-            Renderer renderer = background.GetComponent<Renderer>();
-            Vector3 originalCenter = renderer != null ? renderer.bounds.center : background.transform.position;
-            background.dimensions = targetDimensions;
-            PositionSpriteBoundsCenter(background, originalCenter);
             Logger.LogInfo($"Expanded Map screen background from " +
                 $"{originalMapBackgroundDimensions.x:0}x{originalMapBackgroundDimensions.y:0} to " +
                 $"{targetDimensions.x:0}x{targetDimensions.y:0}.");
@@ -1726,12 +1628,7 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             if (expandedMapBackgroundSprite != null && originalMapBackgroundDimensionsCaptured)
             {
-                Renderer renderer = expandedMapBackgroundSprite.GetComponent<Renderer>();
-                Vector3 originalCenter = renderer != null
-                    ? renderer.bounds.center
-                    : expandedMapBackgroundSprite.transform.position;
-                expandedMapBackgroundSprite.dimensions = originalMapBackgroundDimensions;
-                PositionSpriteBoundsCenter(expandedMapBackgroundSprite, originalCenter);
+                ResizeSpritePreservingCenter(expandedMapBackgroundSprite, originalMapBackgroundDimensions);
             }
             expandedMapBackgroundSprite = null;
             originalMapBackgroundDimensions = Vector2.zero;
