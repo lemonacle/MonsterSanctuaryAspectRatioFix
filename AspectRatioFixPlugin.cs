@@ -8,7 +8,7 @@ using UnityEngine.SceneManagement;
 
 namespace MonsterSanctuaryAspectRatioFix
 {
-    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.27")]
+    [BepInPlugin("lemonacle.MonsterSanctuary.AspectRatioFix", "Aspect Ratio Fix", "2.1.29")]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
         private const int OriginalWidth = 480;
@@ -17,6 +17,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private const float SixteenByTenAspect = 16f / 10f;
         private const float AspectTolerance = 0.02f;
         private const float UiAspect = 16f / 9f;
+        private const float MapBackgroundOverscanPerEdge = 8f;
         private static float VisibleWorldWidth { get; set; } = 360f;
         private static float TargetAspect { get; set; } = AspectRatioFixAspect;
         private static int UiCanvasHeight => Mathf.RoundToInt(OriginalWidth / TargetAspect);
@@ -155,7 +156,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void Awake()
         {
             Instance = this;
-            Logger.LogInfo("Aspect Ratio Fix 2.1.27 Monster Shift background coverage patch loaded.");
+            Logger.LogInfo("Aspect Ratio Fix 2.1.29 Map background overscan patch loaded.");
             harmony = new Harmony("lemonacle.MonsterSanctuary.AspectRatioFix");
             harmony.PatchAll();
             previousScreenWidth = Screen.width;
@@ -1672,7 +1673,8 @@ namespace MonsterSanctuaryAspectRatioFix
 
             Vector2 targetDimensions = new Vector2(
                 originalMapBackgroundDimensions.x,
-                originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight + 2f);
+                originalMapBackgroundDimensions.y + UiCanvasHeight - OriginalHeight +
+                    MapBackgroundOverscanPerEdge * 2f);
             if ((background.dimensions - targetDimensions).sqrMagnitude < 0.001f)
             {
                 return;
