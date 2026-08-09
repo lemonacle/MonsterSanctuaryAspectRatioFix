@@ -42,6 +42,21 @@ namespace MonsterSanctuaryAspectRatioFix
         private const float AspectTolerance = 0.02f;
         private const float UiAspect = 16f / 9f;
         private const float MapBackgroundOverscanPerEdge = 8f;
+        private const int UnityLayerCount = 32;
+        private const int FirstCandidateUiLayer = 8;
+        private const int LastCandidateUiLayer = 30;
+        private const float UiCameraDepthOffset = 10f;
+        private const float TooltipCameraDepthOffset = 11f;
+        private const float CombatForegroundCameraDepthOffset = 12f;
+        private const int UiCompositeRenderQueue = 4000;
+        private const int TooltipCompositeRenderQueue = 4001;
+        private const int CombatForegroundRenderQueue = 4002;
+        private const int BaseCompositeSortingOrder = 32766;
+        private const int ForegroundCompositeSortingOrder = 32767;
+        private const float UiQuadDepthOffset = 0.01f;
+        private const float TooltipQuadDepthOffset = 0.02f;
+        private const float CombatForegroundQuadDepthOffset = 0.03f;
+        private const int CombatInitializationFrameCount = 12;
         private static float VisibleWorldWidth { get; set; } = 360f;
         private static float TargetAspect { get; set; } = AspectRatioFixAspect;
         private static int UiCanvasHeight => Mathf.RoundToInt(OriginalWidth / TargetAspect);
@@ -627,16 +642,16 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private int FindUnusedLayer(int excludedLayer = -1, int secondExcludedLayer = -1)
         {
-            bool[] usedLayers = new bool[32];
+            bool[] usedLayers = new bool[UnityLayerCount];
             GameObject[] objects = Resources.FindObjectsOfTypeAll<GameObject>();
             foreach (GameObject gameObject in objects)
             {
-                if (gameObject != null && gameObject.layer >= 0 && gameObject.layer < 32)
+                if (gameObject != null && gameObject.layer >= 0 && gameObject.layer < UnityLayerCount)
                 {
                     usedLayers[gameObject.layer] = true;
                 }
             }
-            for (int layer = 30; layer >= 8; layer--)
+            for (int layer = LastCandidateUiLayer; layer >= FirstCandidateUiLayer; layer--)
             {
                 if (layer != excludedLayer && layer != secondExcludedLayer && !usedLayers[layer] &&
                     string.IsNullOrEmpty(LayerMask.LayerToName(layer)))
@@ -644,10 +659,11 @@ namespace MonsterSanctuaryAspectRatioFix
                     return layer;
                 }
             }
-            // Layer 30 is the least likely remaining layer to be used.
-            if (excludedLayer != 30 && secondExcludedLayer != 30 && !usedLayers[30])
+            // The highest candidate layer is the least likely remaining layer to be used.
+            if (excludedLayer != LastCandidateUiLayer && secondExcludedLayer != LastCandidateUiLayer &&
+                !usedLayers[LastCandidateUiLayer])
             {
-                return 30;
+                return LastCandidateUiLayer;
             }
             return -1;
         }
@@ -667,7 +683,7 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderCamera.backgroundColor = Color.clear;
             uiRenderCamera.targetTexture = uiRenderTexture;
             uiRenderCamera.rect = new Rect(0f, 0f, 1f, 1f);
-            uiRenderCamera.depth = primaryCamera.depth + 10f;
+            uiRenderCamera.depth = primaryCamera.depth + UiCameraDepthOffset;
             uiRenderCamera.allowHDR = false;
             uiRenderCamera.allowMSAA = false;
             uiRenderTkCamera = uiCameraObject.AddComponent<tk2dCamera>();
@@ -837,9 +853,9 @@ namespace MonsterSanctuaryAspectRatioFix
             uiQuadMaterial.name = "AspectRatioFix UI Composite Material";
             uiQuadMaterial.mainTexture = uiRenderTexture;
             uiQuadMaterial.color = Color.white;
-            uiQuadMaterial.renderQueue = 4000;
+            uiQuadMaterial.renderQueue = UiCompositeRenderQueue;
             uiQuadRenderer.sharedMaterial = uiQuadMaterial;
-            uiQuadRenderer.sortingOrder = 32766;
+            uiQuadRenderer.sortingOrder = BaseCompositeSortingOrder;
             // The duplicated world quad contains cropped UVs; restore all UI.
             SetHorizontalUvRange(uiQuadRenderer, 0f, 1f);
         }
@@ -859,7 +875,7 @@ namespace MonsterSanctuaryAspectRatioFix
             tooltipRenderCamera.backgroundColor = Color.clear;
             tooltipRenderCamera.targetTexture = tooltipRenderTexture;
             tooltipRenderCamera.rect = new Rect(0f, 0f, 1f, 1f);
-            tooltipRenderCamera.depth = primaryCamera.depth + 11f;
+            tooltipRenderCamera.depth = primaryCamera.depth + TooltipCameraDepthOffset;
             tooltipRenderCamera.allowHDR = false;
             tooltipRenderCamera.allowMSAA = false;
             tooltipRenderTkCamera = tooltipCameraObject.AddComponent<tk2dCamera>();
@@ -905,9 +921,9 @@ namespace MonsterSanctuaryAspectRatioFix
             tooltipQuadMaterial.name = "AspectRatioFix Bottom Tooltip Composite Material";
             tooltipQuadMaterial.mainTexture = tooltipRenderTexture;
             tooltipQuadMaterial.color = Color.white;
-            tooltipQuadMaterial.renderQueue = 4001;
+            tooltipQuadMaterial.renderQueue = TooltipCompositeRenderQueue;
             tooltipQuadRenderer.sharedMaterial = tooltipQuadMaterial;
-            tooltipQuadRenderer.sortingOrder = 32767;
+            tooltipQuadRenderer.sortingOrder = ForegroundCompositeSortingOrder;
             // The duplicated world quad contains cropped UVs; restore the full 480x270 tooltip frame.
             SetHorizontalUvRange(tooltipQuadRenderer, 0f, 1f);
         }
@@ -934,7 +950,7 @@ namespace MonsterSanctuaryAspectRatioFix
             combatForegroundRenderCamera.backgroundColor = Color.clear;
             combatForegroundRenderCamera.targetTexture = combatForegroundRenderTexture;
             combatForegroundRenderCamera.rect = new Rect(0f, 0f, 1f, 1f);
-            combatForegroundRenderCamera.depth = primaryCamera.depth + 12f;
+            combatForegroundRenderCamera.depth = primaryCamera.depth + CombatForegroundCameraDepthOffset;
             combatForegroundRenderCamera.allowHDR = false;
             combatForegroundRenderCamera.allowMSAA = false;
             combatForegroundRenderTkCamera = combatForegroundCameraObject.AddComponent<tk2dCamera>();
@@ -965,9 +981,9 @@ namespace MonsterSanctuaryAspectRatioFix
             combatForegroundQuadMaterial.name = "AspectRatioFix Combat Buff Info Composite Material";
             combatForegroundQuadMaterial.mainTexture = combatForegroundRenderTexture;
             combatForegroundQuadMaterial.color = Color.white;
-            combatForegroundQuadMaterial.renderQueue = 4002;
+            combatForegroundQuadMaterial.renderQueue = CombatForegroundRenderQueue;
             combatForegroundQuadRenderer.sharedMaterial = combatForegroundQuadMaterial;
-            combatForegroundQuadRenderer.sortingOrder = 32767;
+            combatForegroundQuadRenderer.sortingOrder = ForegroundCompositeSortingOrder;
             combatForegroundQuadRenderer.enabled = false;
             UpdateCombatForegroundPresentation();
         }
@@ -986,7 +1002,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 combatForegroundQuadObject.transform.localScale = finalWorldQuad.transform.localScale;
                 Vector3 center = finalWorldQuad.bounds.center;
-                center -= finalTkCamera.transform.forward * 0.03f;
+                center -= finalTkCamera.transform.forward * CombatForegroundQuadDepthOffset;
                 combatForegroundQuadObject.transform.position = center;
             }
         }
@@ -1089,7 +1105,7 @@ namespace MonsterSanctuaryAspectRatioFix
              */
             uiQuadObject.transform.localScale = finalWorldQuad.transform.localScale;
             Vector3 center = finalWorldQuad.bounds.center;
-            center -= finalTkCamera.transform.forward * 0.01f;
+            center -= finalTkCamera.transform.forward * UiQuadDepthOffset;
             uiQuadObject.transform.position = center;
             float screenAspect = Screen.width / (float)Screen.height;
             float uiPixelWidth;
@@ -1140,7 +1156,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 float bottomAnchorShift = finalWorldQuad.bounds.size.y * (1f - heightRatio) / 2f;
                 center -= finalTkCamera.transform.up * bottomAnchorShift;
             }
-            center -= finalTkCamera.transform.forward * 0.02f;
+            center -= finalTkCamera.transform.forward * TooltipQuadDepthOffset;
             tooltipQuadObject.transform.position = center;
         }
 
@@ -1964,19 +1980,27 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             if (uiQuadMaterial != null)
             {
-                uiQuadMaterial.renderQueue = buffInfoOnTop ? 4001 : 4000;
+                uiQuadMaterial.renderQueue = buffInfoOnTop
+                    ? TooltipCompositeRenderQueue
+                    : UiCompositeRenderQueue;
             }
             if (tooltipQuadMaterial != null)
             {
-                tooltipQuadMaterial.renderQueue = buffInfoOnTop ? 4000 : 4001;
+                tooltipQuadMaterial.renderQueue = buffInfoOnTop
+                    ? UiCompositeRenderQueue
+                    : TooltipCompositeRenderQueue;
             }
             if (uiQuadRenderer != null)
             {
-                uiQuadRenderer.sortingOrder = buffInfoOnTop ? 32767 : 32766;
+                uiQuadRenderer.sortingOrder = buffInfoOnTop
+                    ? ForegroundCompositeSortingOrder
+                    : BaseCompositeSortingOrder;
             }
             if (tooltipQuadRenderer != null)
             {
-                tooltipQuadRenderer.sortingOrder = buffInfoOnTop ? 32766 : 32767;
+                tooltipQuadRenderer.sortingOrder = buffInfoOnTop
+                    ? BaseCompositeSortingOrder
+                    : ForegroundCompositeSortingOrder;
             }
         }
 
@@ -2640,9 +2664,8 @@ namespace MonsterSanctuaryAspectRatioFix
              * are activated, reparented, or generated during setup.
              * World scaling is handled by the PixelCamera2D policy hooks.
              */
-            const int InitializationFrames = 12;
             for (int frame = 0;
-                 frame < InitializationFrames;
+                 frame < CombatInitializationFrameCount;
                  frame++)
             {
                 if (!CropActive || combatUi == null)
