@@ -739,6 +739,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void ValidateExpandedUiProjection()
         {
             if (uiRenderTexture == null || uiRenderTkCamera == null || primaryTkCamera == null ||
+                uiRenderTexture.width != OriginalWidth || uiRenderTexture.height != UiCanvasHeight ||
                 validatedUiProjectionHeight == UiCanvasHeight)
             {
                 return;
