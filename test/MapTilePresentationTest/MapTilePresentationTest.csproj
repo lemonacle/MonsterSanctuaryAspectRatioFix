@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <AssemblyName>lemonacle.MonsterSanctuary.MapTilePresentationTest</AssemblyName>
+    <RootNamespace>MonsterSanctuaryMapTilePresentationTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" PrivateAssets="all" />
+    <PackageReference Include="HarmonyX" Version="2.9.0" PrivateAssets="all" />
+    <PackageReference Include="UnityEngine.Modules" Version="2021.3.33" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
