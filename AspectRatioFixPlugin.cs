@@ -18,6 +18,23 @@ namespace MonsterSanctuaryAspectRatioFix
     [BepInPlugin(PluginMetadata.Id, PluginMetadata.Name, PluginMetadata.Version)]
     public class AspectRatioFixPlugin : BaseUnityPlugin
     {
+        [System.Flags]
+        private enum PresentationRefresh
+        {
+            None = 0,
+            ExplorationHud = 1 << 0,
+            UiCamera = 1 << 1,
+            TooltipCamera = 1 << 2,
+            UiQuad = 1 << 3,
+            TooltipQuad = 1 << 4,
+            NativeShade = 1 << 5,
+            CombatForeground = 1 << 6,
+            UiComposite = UiCamera | UiQuad,
+            TooltipComposite = TooltipCamera | TooltipQuad,
+            CameraDependent = UiComposite | TooltipComposite | CombatForeground,
+            All = ExplorationHud | CameraDependent | NativeShade
+        }
+
         private const int OriginalWidth = 480;
         private const int OriginalHeight = 270;
         private const float AspectRatioFixAspect = 4f / 3f;
@@ -39,6 +56,8 @@ namespace MonsterSanctuaryAspectRatioFix
         private static AspectRatioFixPlugin Instance { get; set; }
         private int previousScreenWidth;
         private int previousScreenHeight;
+        private PresentationRefresh pendingPresentationRefresh;
+        private bool applyingPresentationRefresh;
         private Coroutine pendingApply;
         private Coroutine sceneRegistrationCoroutine;
         private Coroutine familiarSelectionLayoutCoroutine;
@@ -53,6 +72,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private Camera uiRenderCamera;
         private tk2dCamera uiRenderTkCamera;
         private tk2dUICamera uiInputCamera;
+        private tk2dCameraResolutionOverride[] expandedUiResolutionOverrides;
         private RenderTexture uiRenderTexture;
         private GameObject uiQuadObject;
         private MeshRenderer uiQuadRenderer;
@@ -207,17 +227,62 @@ namespace MonsterSanctuaryAspectRatioFix
                 previousScreenHeight = Screen.height;
                 ScheduleApply();
             }
-            if (!CropActive)
+        }
+
+        private void RefreshPresentation(PresentationRefresh refresh)
+        {
+            if (!CropActive || refresh == PresentationRefresh.None)
             {
                 return;
             }
-            UpdateExplorationHudLayout();
-            UpdateUiCameraTransform();
-            UpdateTooltipCameraTransform();
-            UpdateUiQuadLayout();
-            UpdateTooltipQuadLayout();
-            UpdateNativeShadeCoverage();
-            UpdateCombatForegroundPresentation();
+
+            pendingPresentationRefresh |= refresh;
+            if (applyingPresentationRefresh)
+            {
+                return;
+            }
+
+            applyingPresentationRefresh = true;
+            try
+            {
+                while (pendingPresentationRefresh != PresentationRefresh.None)
+                {
+                    PresentationRefresh currentRefresh = pendingPresentationRefresh;
+                    pendingPresentationRefresh = PresentationRefresh.None;
+                    if ((currentRefresh & PresentationRefresh.ExplorationHud) != 0)
+                    {
+                        UpdateExplorationHudLayout();
+                    }
+                    if ((currentRefresh & PresentationRefresh.UiCamera) != 0)
+                    {
+                        UpdateUiCameraTransform();
+                    }
+                    if ((currentRefresh & PresentationRefresh.TooltipCamera) != 0)
+                    {
+                        UpdateTooltipCameraTransform();
+                    }
+                    if ((currentRefresh & PresentationRefresh.UiQuad) != 0)
+                    {
+                        UpdateUiQuadLayout();
+                    }
+                    if ((currentRefresh & PresentationRefresh.TooltipQuad) != 0)
+                    {
+                        UpdateTooltipQuadLayout();
+                    }
+                    if ((currentRefresh & PresentationRefresh.NativeShade) != 0)
+                    {
+                        UpdateNativeShadeCoverage();
+                    }
+                    if ((currentRefresh & PresentationRefresh.CombatForeground) != 0)
+                    {
+                        UpdateCombatForegroundPresentation();
+                    }
+                }
+            }
+            finally
+            {
+                applyingPresentationRefresh = false;
+            }
         }
 
         private void ScheduleApply()
@@ -298,11 +363,7 @@ namespace MonsterSanctuaryAspectRatioFix
             AssignRegisteredKeepersIntros();
             EnsureShadePresentation();
             ExcludeUiLayerFromOtherCameras();
-            UpdateExplorationHudLayout();
-            UpdateUiCameraTransform();
-            UpdateTooltipCameraTransform();
-            UpdateUiQuadLayout();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.All);
             RefreshUiInputState();
             if (RelativeOriginDirtyField != null)
             {
@@ -641,10 +702,14 @@ namespace MonsterSanctuaryAspectRatioFix
             uiRenderTkCamera.nativeResolutionWidth = OriginalWidth;
             uiRenderTkCamera.nativeResolutionHeight = UiCanvasHeight;
             uiRenderTkCamera.ZoomFactor = primaryTkCamera.ZoomFactor;
-            uiRenderTkCamera.resolutionOverride = new[]
+            if (expandedUiResolutionOverrides == null)
             {
-                tk2dCameraResolutionOverride.DefaultOverride
-            };
+                expandedUiResolutionOverrides = new[]
+                {
+                    tk2dCameraResolutionOverride.DefaultOverride
+                };
+            }
+            uiRenderTkCamera.resolutionOverride = expandedUiResolutionOverrides;
 
             targetSettings.projection = sourceSettings.projection;
             targetSettings.orthographicType = sourceSettings.orthographicType;
@@ -1119,6 +1184,7 @@ namespace MonsterSanctuaryAspectRatioFix
             RegisterExistingKeepersIntros();
             AssignRegisteredKeepersIntros();
             ExcludeUiLayerFromOtherCameras();
+            RefreshPresentation(PresentationRefresh.All);
             RefreshUiInputState();
         }
 
@@ -1287,8 +1353,7 @@ namespace MonsterSanctuaryAspectRatioFix
             EnsureUiPipeline();
             AssignTooltipComponent(tooltip);
             ExcludeUiLayerFromOtherCameras();
-            UpdateTooltipCameraTransform();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.TooltipComposite);
         }
 
         private void AssignNewGameDescriptionPresentation(NewGameMenu newGameMenu)
@@ -1310,8 +1375,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 SetLayerRecursively(newGameMenu.DescriptionText.gameObject, tooltipLayer);
             }
-            UpdateTooltipCameraTransform();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.TooltipComposite);
         }
 
         private void UpdateNativeShadeCoverage()
@@ -1813,8 +1877,7 @@ namespace MonsterSanctuaryAspectRatioFix
             }
             SetLayerRecursively(popup.DescriptionGO, tooltipLayer);
             ExcludeUiLayerFromOtherCameras();
-            UpdateTooltipCameraTransform();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.TooltipComposite);
         }
 
         private void SetCombatBuffInfoCompositePriority(bool buffInfoOnTop)
@@ -1861,8 +1924,7 @@ namespace MonsterSanctuaryAspectRatioFix
             EnsureUiPipeline();
             AssignTooltipComponent(overlay);
             ExcludeUiLayerFromOtherCameras();
-            UpdateTooltipCameraTransform();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.TooltipComposite);
         }
 
         private void ShowMissingModalShade(GameObject target)
@@ -2014,8 +2076,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 AssignUiLayerRecursively(intro.FamiliarInfoRoot);
             }
             ExcludeUiLayerFromOtherCameras();
-            UpdateUiCameraTransform();
-            UpdateUiQuadLayout();
+            RefreshPresentation(PresentationRefresh.UiComposite);
             ScheduleFamiliarSelectionCenter(intro);
             if (IsKeeperIntroCompositionVisible(intro))
             {
@@ -2428,16 +2489,7 @@ namespace MonsterSanctuaryAspectRatioFix
              * the final world quad. Refresh it only when the game itself
              * recalculates the display.
              */
-            if (UiCompositeActive)
-            {
-                UpdateUiCameraTransform();
-                UpdateUiQuadLayout();
-            }
-            if (TooltipCompositeActive)
-            {
-                UpdateTooltipCameraTransform();
-                UpdateTooltipQuadLayout();
-            }
+            RefreshPresentation(PresentationRefresh.CameraDependent);
             return true;
         }
 
@@ -2515,10 +2567,7 @@ namespace MonsterSanctuaryAspectRatioFix
              */
             SetCombatUiHierarchy(combatUi, true);
             ExcludeUiLayerFromOtherCameras();
-            UpdateUiCameraTransform();
-            UpdateTooltipCameraTransform();
-            UpdateUiQuadLayout();
-            UpdateTooltipQuadLayout();
+            RefreshPresentation(PresentationRefresh.CameraDependent);
             combatInitializationCoroutine = StartCoroutine(InitializeCombatPresentation(combatUi));
         }
 
@@ -2550,10 +2599,7 @@ namespace MonsterSanctuaryAspectRatioFix
             if (CropActive && combatUi != null)
             {
                 ExcludeUiLayerFromOtherCameras();
-                UpdateUiCameraTransform();
-                UpdateTooltipCameraTransform();
-                UpdateUiQuadLayout();
-                UpdateTooltipQuadLayout();
+                RefreshPresentation(PresentationRefresh.CameraDependent);
             }
             combatInitializationCoroutine = null;
         }
@@ -2779,7 +2825,7 @@ namespace MonsterSanctuaryAspectRatioFix
              */
             SetCombatBuffInfoCompositePriority(true);
             SetBuffInfoIconForeground(buffInfoMenu, true);
-            UpdateCombatForegroundPresentation();
+            RefreshPresentation(PresentationRefresh.CombatForeground);
             ExcludeUiLayerFromOtherCameras();
             ScheduleCombatBuffInfoLayout(buffInfoMenu);
         }
@@ -3281,7 +3327,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 // Keep the native shade in the UI depth stack. The expanded UI
                 // canvas lets this single sprite cover the complete output.
                 AssignUiComponent(uiController.ShadeLayer);
-                UpdateNativeShadeCoverage();
+                RefreshPresentation(PresentationRefresh.NativeShade);
             }
             if (uiController.Dialogue != null && uiController.Dialogue.NarrationBackground != null)
             {
@@ -4123,7 +4169,7 @@ namespace MonsterSanctuaryAspectRatioFix
         {
             private static void Postfix()
             {
-                Instance?.UpdateNativeShadeCoverage();
+                Instance?.RefreshPresentation(PresentationRefresh.NativeShade);
             }
         }
 
@@ -4134,7 +4180,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 // Hide can reveal the preceding entry in ShadeLayer's stack;
                 // keep the shared shade expanded while that entry remains.
-                Instance?.UpdateNativeShadeCoverage();
+                Instance?.RefreshPresentation(PresentationRefresh.NativeShade);
             }
         }
 

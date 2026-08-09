@@ -18,6 +18,7 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 - Corrects mouse input mapping for the separately composited UI.
 - Supports switching between compatible resolutions during the same session.
 - Applies menu and dynamically generated UI corrections through lifecycle events rather than continuous menu polling.
+- Refreshes camera composites, HUD layout, and shade coverage only when presentation state changes.
 
 ## Current development highlights
 
@@ -154,7 +155,6 @@ The following items are planned for future updates. They are priorities rather t
 
 ### Performance and code cleanup
 
-- Replace remaining per-frame presentation refreshes with event-driven or dirty-flag updates where safe.
 - Remove obsolete compatibility and tooltip-suppression code left behind by earlier implementations.
 - Prune destroyed Unity objects from cached layer, camera, and position collections after scene changes.
 - Centralize remaining UI teardown and repeated lifecycle handling.
