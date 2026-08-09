@@ -1175,6 +1175,7 @@ namespace MonsterSanctuaryAspectRatioFix
             yield return null;
             yield return new WaitForEndOfFrame();
             sceneRegistrationCoroutine = null;
+            PruneDestroyedSceneReferences();
             if (!CropActive)
             {
                 yield break;
@@ -1186,6 +1187,94 @@ namespace MonsterSanctuaryAspectRatioFix
             ExcludeUiLayerFromOtherCameras();
             RefreshPresentation(PresentationRefresh.All);
             RefreshUiInputState();
+        }
+
+        private void PruneDestroyedSceneReferences()
+        {
+            /*
+             * Destroyed Unity objects retain their managed wrappers and remain
+             * valid dictionary keys. Release those keys once the previous
+             * scene has finished unloading instead of retaining every scene's
+             * layer, camera, and saved-layout state for the plugin lifetime.
+             */
+            PruneDestroyedKeys(originalMapElementLocalPositions);
+            PruneDestroyedKeys(originalMapArrowAnchorCameras);
+            PruneDestroyedKeys(mapArrowOffsetWrappers);
+            PruneDestroyedKeys(originalMapArrowSiblingIndices);
+            PruneDestroyedKeys(originalLayers);
+            PruneDestroyedKeys(originalCameraMasks);
+            PruneDestroyedKeys(originalHudLocalX);
+            PruneDestroyedKeys(originalVictoryBannerLocalPositions);
+            PruneDestroyedKeys(originalSkipPromptLocalPositions);
+            PruneDestroyedKeys(originalFamiliarSelectionLocalPositions);
+            PruneDestroyedKeys(originalKeeperIntroLocalPositions);
+            PruneDestroyedObjects(registeredKeepersIntros);
+            PruneDestroyedObjects(centeredFamiliarSelections);
+            PruneDestroyedObjects(adjustedKeeperIntros);
+        }
+
+        private static void PruneDestroyedKeys<TKey, TValue>(Dictionary<TKey, TValue> entries)
+            where TKey : UnityEngine.Object
+        {
+            List<TKey> destroyedKeys = null;
+            foreach (TKey key in entries.Keys)
+            {
+                if (key != null)
+                {
+                    continue;
+                }
+                if (destroyedKeys == null)
+                {
+                    destroyedKeys = new List<TKey>();
+                }
+                destroyedKeys.Add(key);
+            }
+            if (destroyedKeys == null)
+            {
+                return;
+            }
+            foreach (TKey key in destroyedKeys)
+            {
+                entries.Remove(key);
+            }
+        }
+
+        private static void PruneDestroyedObjects<TObject>(List<TObject> entries)
+            where TObject : UnityEngine.Object
+        {
+            for (int index = entries.Count - 1; index >= 0; index--)
+            {
+                if (entries[index] == null)
+                {
+                    entries.RemoveAt(index);
+                }
+            }
+        }
+
+        private static void PruneDestroyedObjects<TObject>(HashSet<TObject> entries)
+            where TObject : UnityEngine.Object
+        {
+            List<TObject> destroyedObjects = null;
+            foreach (TObject entry in entries)
+            {
+                if (entry != null)
+                {
+                    continue;
+                }
+                if (destroyedObjects == null)
+                {
+                    destroyedObjects = new List<TObject>();
+                }
+                destroyedObjects.Add(entry);
+            }
+            if (destroyedObjects == null)
+            {
+                return;
+            }
+            foreach (TObject entry in destroyedObjects)
+            {
+                entries.Remove(entry);
+            }
         }
 
         private bool TryGetPresentationLayer(GameObject root, out int targetLayer)
