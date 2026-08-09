@@ -194,11 +194,7 @@ namespace MonsterSanctuaryAspectRatioFix
         private void OnDestroy()
         {
             SceneManager.sceneLoaded -= OnSceneLoaded;
-            if (sceneRegistrationCoroutine != null)
-            {
-                StopCoroutine(sceneRegistrationCoroutine);
-                sceneRegistrationCoroutine = null;
-            }
+            CancelAllPendingCoroutines();
             RestoreNativeShadeDimensions();
             RestoreMapBackgroundDimensions();
             RestoreMapScreenLayout();
@@ -284,12 +280,39 @@ namespace MonsterSanctuaryAspectRatioFix
             }
         }
 
+        private void StopTrackedCoroutine(ref Coroutine coroutine)
+        {
+            if (coroutine == null)
+            {
+                return;
+            }
+            StopCoroutine(coroutine);
+            coroutine = null;
+        }
+
+        private void CancelCombatPresentationCoroutines()
+        {
+            StopTrackedCoroutine(ref combatInitializationCoroutine);
+            StopTrackedCoroutine(ref combatBuffInfoLayoutCoroutine);
+        }
+
+        private void CancelPresentationCoroutines()
+        {
+            StopTrackedCoroutine(ref familiarSelectionLayoutCoroutine);
+            StopTrackedCoroutine(ref skipPromptAnchorCoroutine);
+            CancelCombatPresentationCoroutines();
+        }
+
+        private void CancelAllPendingCoroutines()
+        {
+            StopTrackedCoroutine(ref pendingApply);
+            StopTrackedCoroutine(ref sceneRegistrationCoroutine);
+            CancelPresentationCoroutines();
+        }
+
         private void ScheduleApply()
         {
-            if (pendingApply != null)
-            {
-                StopCoroutine(pendingApply);
-            }
+            StopTrackedCoroutine(ref pendingApply);
             pendingApply = StartCoroutine(ApplyAfterResolutionSettles());
         }
 
@@ -428,6 +451,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void RestoreOriginalDisplay(PixelCamera2D pixelCamera)
         {
+            CancelPresentationCoroutines();
             CropActive = false;
             UiCompositeActive = false;
             TooltipCompositeActive = false;
@@ -969,6 +993,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void DestroyUiPipeline()
         {
+            CancelPresentationCoroutines();
             RestoreNativeShadeDimensions();
             RestoreMonsterSelectorBackgroundDimensions();
             RestoreMonsterShiftBackgroundDimensions();
@@ -977,69 +1002,18 @@ namespace MonsterSanctuaryAspectRatioFix
             UiInputActive = false;
             UiLayerIndex = -1;
             TooltipLayerIndex = -1;
-            if (combatForegroundQuadObject != null)
-            {
-                UnityEngine.Object.Destroy(combatForegroundQuadObject);
-                combatForegroundQuadObject = null;
-            }
-            if (combatForegroundCameraObject != null)
-            {
-                UnityEngine.Object.Destroy(combatForegroundCameraObject);
-                combatForegroundCameraObject = null;
-            }
-            if (combatForegroundQuadMaterial != null)
-            {
-                UnityEngine.Object.Destroy(combatForegroundQuadMaterial);
-                combatForegroundQuadMaterial = null;
-            }
-            if (combatForegroundRenderTexture != null)
-            {
-                combatForegroundRenderTexture.Release();
-                UnityEngine.Object.Destroy(combatForegroundRenderTexture);
-                combatForegroundRenderTexture = null;
-            }
-            if (tooltipQuadObject != null)
-            {
-                UnityEngine.Object.Destroy(tooltipQuadObject);
-                tooltipQuadObject = null;
-            }
-            if (tooltipCameraObject != null)
-            {
-                UnityEngine.Object.Destroy(tooltipCameraObject);
-                tooltipCameraObject = null;
-            }
-            if (tooltipQuadMaterial != null)
-            {
-                UnityEngine.Object.Destroy(tooltipQuadMaterial);
-                tooltipQuadMaterial = null;
-            }
-            if (tooltipRenderTexture != null)
-            {
-                tooltipRenderTexture.Release();
-                UnityEngine.Object.Destroy(tooltipRenderTexture);
-                tooltipRenderTexture = null;
-            }
-            if (uiQuadObject != null)
-            {
-                UnityEngine.Object.Destroy(uiQuadObject);
-                uiQuadObject = null;
-            }
-            if (uiCameraObject != null)
-            {
-                UnityEngine.Object.Destroy(uiCameraObject);
-                uiCameraObject = null;
-            }
-            if (uiQuadMaterial != null)
-            {
-                UnityEngine.Object.Destroy(uiQuadMaterial);
-                uiQuadMaterial = null;
-            }
-            if (uiRenderTexture != null)
-            {
-                uiRenderTexture.Release();
-                UnityEngine.Object.Destroy(uiRenderTexture);
-                uiRenderTexture = null;
-            }
+            DestroyRuntimeObject(ref combatForegroundQuadObject);
+            DestroyRuntimeObject(ref combatForegroundCameraObject);
+            DestroyRuntimeObject(ref combatForegroundQuadMaterial);
+            DestroyRenderTexture(ref combatForegroundRenderTexture);
+            DestroyRuntimeObject(ref tooltipQuadObject);
+            DestroyRuntimeObject(ref tooltipCameraObject);
+            DestroyRuntimeObject(ref tooltipQuadMaterial);
+            DestroyRenderTexture(ref tooltipRenderTexture);
+            DestroyRuntimeObject(ref uiQuadObject);
+            DestroyRuntimeObject(ref uiCameraObject);
+            DestroyRuntimeObject(ref uiQuadMaterial);
+            DestroyRenderTexture(ref uiRenderTexture);
             tooltipRenderCamera = null;
             tooltipRenderTkCamera = null;
             tooltipQuadRenderer = null;
@@ -1052,6 +1026,26 @@ namespace MonsterSanctuaryAspectRatioFix
             combatForegroundRenderTkCamera = null;
             combatForegroundQuadRenderer = null;
             combatForegroundLayer = -1;
+        }
+
+        private static void DestroyRuntimeObject<TObject>(ref TObject runtimeObject)
+            where TObject : UnityEngine.Object
+        {
+            if (runtimeObject != null)
+            {
+                UnityEngine.Object.Destroy(runtimeObject);
+            }
+            runtimeObject = null;
+        }
+
+        private static void DestroyRenderTexture(ref RenderTexture renderTexture)
+        {
+            if (renderTexture != null)
+            {
+                renderTexture.Release();
+                UnityEngine.Object.Destroy(renderTexture);
+            }
+            renderTexture = null;
         }
 
         private void UpdateUiCameraTransform()
@@ -1157,10 +1151,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void ScheduleSceneRegistration()
         {
-            if (sceneRegistrationCoroutine != null)
-            {
-                StopCoroutine(sceneRegistrationCoroutine);
-            }
+            StopTrackedCoroutine(ref sceneRegistrationCoroutine);
             sceneRegistrationCoroutine = StartCoroutine(RegisterSceneUiAfterInitialization());
         }
 
@@ -2193,10 +2184,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            if (familiarSelectionLayoutCoroutine != null)
-            {
-                StopCoroutine(familiarSelectionLayoutCoroutine);
-            }
+            StopTrackedCoroutine(ref familiarSelectionLayoutCoroutine);
             familiarSelectionLayoutCoroutine = StartCoroutine(CenterFamiliarSelectionAfterOpening(intro));
         }
 
@@ -2286,11 +2274,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void RestoreFamiliarSelectionLayouts()
         {
-            if (familiarSelectionLayoutCoroutine != null)
-            {
-                StopCoroutine(familiarSelectionLayoutCoroutine);
-                familiarSelectionLayoutCoroutine = null;
-            }
+            StopTrackedCoroutine(ref familiarSelectionLayoutCoroutine);
             foreach (KeyValuePair<Transform, Vector3> entry in originalFamiliarSelectionLocalPositions)
             {
                 if (entry.Key != null)
@@ -2428,10 +2412,7 @@ namespace MonsterSanctuaryAspectRatioFix
             {
                 return;
             }
-            if (skipPromptAnchorCoroutine != null)
-            {
-                StopCoroutine(skipPromptAnchorCoroutine);
-            }
+            StopTrackedCoroutine(ref skipPromptAnchorCoroutine);
             skipPromptAnchorCoroutine = StartCoroutine(AnchorSkipPromptAfterLayout(uiController));
         }
 
@@ -2487,11 +2468,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void RestoreSkipPromptLayout()
         {
-            if (skipPromptAnchorCoroutine != null)
-            {
-                StopCoroutine(skipPromptAnchorCoroutine);
-                skipPromptAnchorCoroutine = null;
-            }
+            StopTrackedCoroutine(ref skipPromptAnchorCoroutine);
             foreach (KeyValuePair<Transform, Vector3> entry in originalSkipPromptLocalPositions)
             {
                 if (entry.Key != null)
@@ -2641,10 +2618,7 @@ namespace MonsterSanctuaryAspectRatioFix
                 return;
             }
             activeCombatUi = combatUi;
-            if (combatInitializationCoroutine != null)
-            {
-                StopCoroutine(combatInitializationCoroutine);
-            }
+            StopTrackedCoroutine(ref combatInitializationCoroutine);
             /*
              * Apply immediately so the first visible combat frame uses
              * the unified UI presentation. The short coroutine below
@@ -2693,16 +2667,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void OnCombatEnded(CombatUIController combatUi)
         {
-            if (combatInitializationCoroutine != null)
-            {
-                StopCoroutine(combatInitializationCoroutine);
-                combatInitializationCoroutine = null;
-            }
-            if (combatBuffInfoLayoutCoroutine != null)
-            {
-                StopCoroutine(combatBuffInfoLayoutCoroutine);
-                combatBuffInfoLayoutCoroutine = null;
-            }
+            CancelCombatPresentationCoroutines();
             SetCombatBuffInfoCompositePriority(false);
             if (combatUi?.BuffInfoMenu != null)
             {
@@ -2929,11 +2894,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void OnCombatBuffInfoClosed()
         {
-            if (combatBuffInfoLayoutCoroutine != null)
-            {
-                StopCoroutine(combatBuffInfoLayoutCoroutine);
-                combatBuffInfoLayoutCoroutine = null;
-            }
+            StopTrackedCoroutine(ref combatBuffInfoLayoutCoroutine);
             SetCombatBuffInfoCompositePriority(false);
             if (activeCombatUi?.BuffInfoMenu != null)
             {
@@ -2950,10 +2911,7 @@ namespace MonsterSanctuaryAspectRatioFix
 
         private void ScheduleCombatBuffInfoLayout(BuffInfoMenu buffInfoMenu)
         {
-            if (combatBuffInfoLayoutCoroutine != null)
-            {
-                StopCoroutine(combatBuffInfoLayoutCoroutine);
-            }
+            StopTrackedCoroutine(ref combatBuffInfoLayoutCoroutine);
             combatBuffInfoLayoutCoroutine = StartCoroutine(AdjustCombatBuffInfoAfterLayout(buffInfoMenu));
         }
 

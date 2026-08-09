@@ -32,6 +32,7 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 - Keeps combat Buff Info icons aligned with health bars while rendering them above the shade and combat menus.
 - Corrects Skills, Inventory, Feed, and Consumables tooltip presentation during monster switching.
 - Removes obsolete tooltip suppression and releases destroyed scene-object references from presentation caches.
+- Centralizes pending UI work cancellation and runtime composite-resource teardown.
 
 ## Requirements
 
@@ -156,7 +157,6 @@ The following items are planned for future updates. They are priorities rather t
 
 ### Performance and code cleanup
 
-- Centralize remaining UI teardown and repeated lifecycle handling.
 - Consider splitting the large plugin source into smaller partial-class files without changing runtime behavior.
 
 ### Testing and compatibility
