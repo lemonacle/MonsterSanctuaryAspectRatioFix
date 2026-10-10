@@ -12,7 +12,7 @@ namespace MonsterSanctuaryAspectRatioFix
     {
         internal const string Id = "lemonacle.MonsterSanctuary.AspectRatioFix";
         internal const string Name = "Aspect Ratio Fix";
-        internal const string Version = "2.1.29";
+        internal const string Version = "2.1.30";
     }
 
     [BepInPlugin(PluginMetadata.Id, PluginMetadata.Name, PluginMetadata.Version)]
@@ -1714,6 +1714,33 @@ namespace MonsterSanctuaryAspectRatioFix
                 {
                     return;
                 }
+            }
+        }
+
+        private void RefreshMapTilePresentation(MapMenu mapMenu)
+        {
+            if (mapMenu == null || !CropActive || uiLayer < 0)
+            {
+                return;
+            }
+
+            bool refreshedTiles = false;
+            // InitMapTiles creates tiles after the menu's initial layer assignment.
+            // Track their original layers so switching back to 16:9 restores them.
+            foreach (MinimapTileView tile in mapMenu.GetComponentsInChildren<MinimapTileView>(true))
+            {
+                if (tile == null || !tile.IsMapMenu)
+                {
+                    continue;
+                }
+
+                SetLayerRecursively(tile.gameObject, uiLayer);
+                refreshedTiles = true;
+            }
+
+            if (refreshedTiles)
+            {
+                ExcludeUiLayerFromOtherCameras();
             }
         }
 
@@ -3901,6 +3928,15 @@ namespace MonsterSanctuaryAspectRatioFix
             private static void Postfix(BuffInfoOverlay __instance, BuffInfo __result)
             {
                 Instance?.RefreshBuffInfoPresentation(__instance, __result);
+            }
+        }
+
+        [HarmonyPatch(typeof(MapMenu), "InitMapTiles")]
+        private static class MapMenuInitMapTilesPatch
+        {
+            private static void Postfix(MapMenu __instance)
+            {
+                Instance?.RefreshMapTilePresentation(__instance);
             }
         }
 

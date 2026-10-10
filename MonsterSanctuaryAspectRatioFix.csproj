@@ -39,7 +39,7 @@
 
   <Target Name="CopyPluginToGame"
           AfterTargets="Build"
-          Condition="Exists('$(MonsterSanctuaryDir)\BepInEx\plugins')">
+          Condition="'$(CopyPluginToGame)' != 'false' and Exists('$(MonsterSanctuaryDir)\BepInEx\plugins')">
     <Copy SourceFiles="$(TargetPath)"
           DestinationFolder="$(MonsterSanctuaryDir)\BepInEx\plugins" />
   </Target>

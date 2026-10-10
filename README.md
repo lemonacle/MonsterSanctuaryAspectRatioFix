@@ -2,9 +2,9 @@
 
 A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 and 16:10 resolutions while preserving the game's original presentation at 16:9.
 
-**Current release: v2.1.27**
+**Current release: v2.1.30**
 
-**Current development version: v2.1.29**
+**The tested map-tile companion fix is now included in the main DLL.**
 
 ## Features
 
@@ -20,8 +20,13 @@ A BepInEx mod for **Monster Sanctuary** that improves display support for 4:3 an
 - Applies menu and dynamically generated UI corrections through lifecycle events rather than continuous menu polling.
 - Refreshes camera composites, HUD layout, and shade coverage only when presentation state changes.
 
-## Current development highlights
+## Upgrading from v2.1.29
 
+Replace the main plugin DLL and remove `lemonacle.MonsterSanctuary.MapTilePresentationTest.dll` from `BepInEx/plugins` (including any subfolders). The companion fix is built into v2.1.30, so only the main Aspect Ratio Fix DLL is needed.
+
+## Release highlights
+
+- Includes the tested map-tile fix: newly created Map tiles receive the UI presentation layer immediately after initialization, keeping explored chunks above the menu shade and panning correctly.
 - Completes the 4:3 presentation pass with no remaining visual artifacts found during testing.
 - Uses a pixel-preserving expanded UI canvas so menus retain their original scale and proportions.
 - Extends the native menu shade across the complete frame without duplicated bands or visible seams.
@@ -123,8 +128,8 @@ BepInEx/LogOutput.log
 A successful installation should include entries similar to:
 
 ```text
-Loading [Aspect Ratio Fix 2.1.27]
-Aspect Ratio Fix 2.1.27 Monster Shift background coverage patch loaded.
+Loading [Aspect Ratio Fix 2.1.30]
+Aspect Ratio Fix 2.1.30 loaded.
 ```
 
 If the log file is not created or the plugin does not appear in it, check that:
@@ -200,6 +205,8 @@ bin\Release\net48\lemonacle.MonsterSanctuary.AspectRatioFix.dll
 ```
 
 When a BepInEx `plugins` folder exists in the default game directory, the build also copies the DLL there automatically.
+
+Release packaging can skip copying into the installed game with `dotnet build -c Release -p:CopyPluginToGame=false`.
 
 A different installation path can be supplied through the `MonsterSanctuaryDir` MSBuild property.
 
