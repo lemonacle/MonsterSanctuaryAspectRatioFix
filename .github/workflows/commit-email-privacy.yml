@@ -1,0 +1,55 @@
+name: Protect commit email privacy
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: commit-email-privacy
+  cancel-in-progress: false
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Replace personal commit emails on branches and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          FILTER_BRANCH_SQUELCH_WARNING: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRIVATE_EMAIL="269020047+lemonacle@users.noreply.github.com"
+          export PRIVATE_EMAIL
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$AUTH"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" clone --mirror "https://github.com/$GH_REPOSITORY.git" repo.git
+          cd repo.git
+          git config remote.origin.mirror false
+          git config user.name lemonacle
+          git config user.email "$PRIVATE_EMAIL"
+          git for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags > ../before-refs
+          git filter-branch --force --env-filter '
+            if [ "$GIT_AUTHOR_NAME" = "lemonacle" ]; then
+              export GIT_AUTHOR_EMAIL="$PRIVATE_EMAIL"
+            fi
+            if [ "$GIT_COMMITTER_NAME" = "lemonacle" ]; then
+              export GIT_COMMITTER_EMAIL="$PRIVATE_EMAIL"
+            fi
+          ' --tag-name-filter cat -- --branches --tags
+          while read -r ref old; do
+            new="$(git rev-parse "$ref")"
+            if [ "$new" != "$old" ]; then
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push --force-with-lease="$ref:$old" origin "$ref:$ref"
+            fi
+          done < ../before-refs
+          python3 - <<'PY'
+          import subprocess, os
+          refs = subprocess.check_output(["git","for-each-ref","--format=%(refname)","refs/heads","refs/tags"],text=True).splitlines()
+          rows = subprocess.check_output(["git","log","--format=%an%x09%ae%x09%cn%x09%ce",*refs],text=True).splitlines()
+          for row in rows:
+              an, ae, cn, ce = row.split("\t")
+              assert an != "lemonacle" or ae == os.environ["PRIVATE_EMAIL"], "Author email was not sanitized"
+              assert cn != "lemonacle" or ce == os.environ["PRIVATE_EMAIL"], "Committer email was not sanitized"
+          print("Verified private commit identities on all branches and tags.")
+          PY
