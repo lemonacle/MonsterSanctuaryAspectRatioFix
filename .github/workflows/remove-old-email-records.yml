@@ -1,0 +1,48 @@
+name: Remove exposed email from old Actions records
+on:
+  push:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete completed run records containing a personal commit email
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          base = "https://api.github.com/repos/" + os.environ["GH_REPOSITORY"]
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+          def request(path, method="GET"):
+              r = urllib.request.Request(base + path, headers=headers, method=method)
+              with urllib.request.urlopen(r) as response:
+                  return json.load(response) if method == "GET" else None
+          runs = []
+          page = 1
+          while True:
+              batch = request("/actions/runs?per_page=100&page=" + str(page))["workflow_runs"]
+              runs.extend(batch)
+              if len(batch) < 100: break
+              page += 1
+          deleted = 0
+          for run in runs:
+              if str(run["id"]) == os.environ["GH_RUN_ID"]: continue
+              commit = run.get("head_commit") or {}
+              exposed = any(
+                  identity.get("name") == "lemonacle" and
+                  identity.get("email") and
+                  not identity["email"].endswith("@users.noreply.github.com")
+                  for identity in [commit.get("author") or {}, commit.get("committer") or {}]
+              )
+              if exposed:
+                  if run["status"] != "completed":
+                      raise RuntimeError("An affected Actions run is still active; retry after completion.")
+                  request("/actions/runs/" + str(run["id"]), "DELETE")
+                  deleted += 1
+          print("Removed", deleted, "completed run records containing personal commit emails.")
+          PY
